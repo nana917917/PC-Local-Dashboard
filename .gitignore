@@ -1,0 +1,9 @@
+setup-log.txt
+*.zip
+app/WattSeal.exe
+app/power_monitoring.db*
+app/dashboard.pid
+app/node-path.txt
+app/storage-map/storage-map.pid
+app/storage-map/node-path.txt
+app/storage-map/data/
