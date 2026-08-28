@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PC容量マップ</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">LOCAL STORAGE VIEW</p>
+        <h1>PC容量マップ</h1>
+        <p id="statusText" class="status">ドライブを確認しています</p>
+      </div>
+      <div class="actions">
+        <button id="powerButton" class="button secondary">電気代へ戻る</button>
+        <button id="pickButton" class="button secondary">フォルダ選択</button>
+        <button id="scanButton" class="button">スキャン開始</button>
+      </div>
+    </header>
+
+    <section class="scan-box">
+      <div id="driveList" class="drive-list"></div>
+      <label class="path-row">
+        <span>調べる場所</span>
+        <input id="pathInput" type="text" placeholder="例：E:\ または E:\SteamLibrary">
+      </label>
+      <div id="progressArea" class="progress-area hidden">
+        <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+        <p id="progressText">準備中</p>
+        <small id="currentPath"></small>
+      </div>
+    </section>
+
+    <section id="resultArea" class="hidden">
+      <section class="hero-grid">
+        <article class="metric accent"><span>スキャンした容量</span><strong id="scannedSize">--</strong><small id="driveUsage">--</small></article>
+        <article class="metric"><span>ファイル数</span><strong id="fileCount">--</strong><small>アクセス可能な範囲</small></article>
+        <article class="metric"><span>フォルダ数</span><strong id="folderCount">--</strong><small id="skipCount">--</small></article>
+        <article class="metric"><span>スキャン日時</span><strong id="scanDate">--</strong><small id="scanDuration">--</small></article>
+      </section>
+
+      <section class="panel map-panel">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">TREEMAP</p>
+            <h2>容量の地図</h2>
+          </div>
+          <button id="openFolderButton" class="button secondary small">この場所を開く</button>
+        </div>
+        <nav id="breadcrumbs" class="breadcrumbs"></nav>
+        <div id="treemap" class="treemap"></div>
+        <p class="hint">四角が大きいほど容量を使っています。フォルダをクリックすると中へ移動します。</p>
+      </section>
+
+      <section class="two-column">
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">CATEGORY</p><h2>用途別</h2></div></div>
+          <div id="categoryList" class="bar-list"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">CONTENTS</p><h2 id="contentsTitle">この階層の中身</h2></div></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>名前</th><th>種類</th><th>容量</th><th>割合</th></tr></thead>
+              <tbody id="contentRows"></tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section id="comparisonPanel" class="panel hidden">
+        <div class="panel-heading">
+          <div><p class="eyebrow">CHANGE</p><h2>前回スキャンからの変化</h2></div>
+          <strong id="totalDelta" class="delta-value">--</strong>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>フォルダ</th><th>前回</th><th>今回</th><th>増減</th></tr></thead>
+            <tbody id="comparisonRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">LARGEST</p><h2>特に大きいフォルダ・ファイル</h2></div>
+          <input id="largestFilter" class="filter" type="search" placeholder="名前・パスで絞る">
+        </div>
+        <div class="table-wrap large-table">
+          <table>
+            <thead><tr><th>名前</th><th>種類</th><th>容量</th><th>場所</th><th></th></tr></thead>
+            <tbody id="largestRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+
+    <p class="notice">データはこのPC内だけに保存します。削除機能はありません。システム保護フォルダなど、権限がない場所は集計から外れる場合があります。</p>
+  </main>
+  <script src="/app.js" defer></script>
+</body>
+</html>
