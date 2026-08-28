@@ -1,0 +1,21 @@
+{
+  "electricityRate": 31,
+  "sensorFactor": 1.1,
+  "baseWatts": 25,
+  "monitorWatts": 0,
+  "monthlyBudget": 0,
+  "gameKeywords": [
+    "steam",
+    "epicgames",
+    "riotclient",
+    "valorant",
+    "apex",
+    "genshin",
+    "terraria",
+    "edf",
+    "earthdefenseforce",
+    "darkanddarker",
+    "mgs",
+    "metalgear"
+  ]
+}
