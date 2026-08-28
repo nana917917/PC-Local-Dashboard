@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PC Local Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">PC LOCAL DASHBOARD</p>
+        <h1>PC Local Dashboard</h1>
+        <p id="statusText" class="status">ローカルデータを読み込んでいます</p>
+      </div>
+      <div class="top-actions">
+        <button id="exportButton" class="button secondary">CSV出力</button>
+        <button id="settingsButton" class="button">設定・データ</button>
+      </div>
+    </header>
+
+    <nav id="mainTabs" class="main-tabs" aria-label="機能">
+      <button data-view="power" class="active"><span>⚡</span>電力</button>
+      <button data-view="storage"><span>▦</span>容量</button>
+      <button data-view="system"><span>◉</span>PC状態</button>
+    </nav>
+
+    <section id="powerView" class="view active">
+      <nav id="rangeTabs" class="range-tabs" aria-label="表示期間">
+        <button data-range="session">今回</button><button data-range="today" class="active">今日</button>
+        <button data-range="7d">7日</button><button data-range="month">今月</button>
+        <button data-range="30d">30日</button><button data-range="90d">90日</button>
+        <button data-range="year">1年</button><button data-range="all">全期間</button>
+      </nav>
+
+      <section class="hero-grid">
+        <article class="metric live"><span>現在の推定電力</span><strong id="currentWatts">--<small>W</small></strong><em id="currentAge">計測待ち</em></article>
+        <article class="metric accent"><span id="periodLabel">今日の推定料金</span><strong id="periodCost">--<small>円</small></strong><em id="periodRate">31円/kWh</em></article>
+        <article class="metric"><span>推定電力量</span><strong id="periodEnergy">--<small>kWh</small></strong><em id="averageWatts">平均 -- W</em></article>
+        <article class="metric"><span>記録された使用時間</span><strong id="activeTime">--</strong><em>停止・スリープ中を除く</em></article>
+      </section>
+
+      <section class="insight-grid">
+        <article><span>今いちばん使う部品</span><strong id="liveComponent">--</strong><small id="liveComponentDetail">取得中</small></article>
+        <article><span>今いちばん使うアプリ</span><strong id="liveApplication">--</strong><small id="liveApplicationDetail">推定配分</small></article>
+        <article><span>直近のピーク</span><strong id="recentPeak">-- W</strong><small id="recentPeakTime">取得中</small></article>
+        <article><span>今月の着地予測</span><strong id="quickMonthCost">--円</strong><small id="quickMonthDetail">現在のペース</small></article>
+      </section>
+
+      <section class="panel chart-panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">POWER TREND</p><h2 id="powerChartTitle">リアルタイム電力</h2></div>
+          <div class="segmented" id="powerChartModes">
+            <button data-mode="live" class="active">リアルタイムW</button>
+            <button data-mode="cost">時間別料金</button>
+            <button data-mode="cumulative">累積料金</button>
+          </div>
+        </div>
+        <div id="liveControls" class="chart-controls"><span>表示範囲</span><button data-minutes="5">5分</button><button data-minutes="15" class="active">15分</button><button data-minutes="60">60分</button></div>
+        <div class="chart-wrap interactive-chart">
+          <canvas id="powerChart" height="310" role="img" aria-label="PC電力と電気代の推移グラフ"></canvas>
+          <div id="powerCrosshair" class="chart-crosshair hidden"></div>
+          <div id="powerTooltip" class="chart-tooltip hidden"></div>
+          <p id="powerChartEmpty" class="empty hidden">この期間の記録はまだありません。</p>
+        </div>
+        <div class="chart-kpis">
+          <article><span>選択期間の合計</span><strong id="chartTotal">--円</strong><small id="chartTotalDetail">-- kWh</small></article>
+          <article><span id="comparisonLabel">直前の同期間比</span><strong id="comparisonValue">--</strong><small id="comparisonDetail">比較データ待ち</small></article>
+          <article><span id="peakBucketLabel">最も高かった時間</span><strong id="peakBucketValue">--円</strong><small id="peakBucketDetail">集計中</small></article>
+        </div>
+        <p id="chartNote" class="chart-note">線が途切れている時間は、PC停止・スリープ・計測停止の可能性があります。スリープ中の電気代は加算しません。</p>
+      </section>
+
+      <section class="quick-strip">
+        <article><span>今回のPC使用</span><strong id="quickCurrentCost">--円</strong><small id="quickCurrentDetail">集計中</small></article>
+        <article><span>前回のPC使用</span><strong id="quickPreviousCost">--円</strong><small id="quickPreviousDetail">履歴待ち</small></article>
+        <article><span>選択期間の最大用途</span><strong id="topCategory">--</strong><small id="topCategoryDetail">分類中</small></article>
+      </section>
+
+      <section class="two-column">
+        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">COMPONENTS</p><h2>部品別</h2></div></div><div id="componentList" class="bar-list"></div></article>
+        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">APPLICATIONS</p><h2>用途・アプリ別</h2></div><span class="muted">推定配分</span></div><div id="categoryList" class="category-list"></div><div class="table-wrap compact"><table><thead><tr><th>アプリ</th><th>割合</th><th>電力量</th><th>料金</th></tr></thead><tbody id="applicationRows"></tbody></table></div></article>
+      </section>
+
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">SESSIONS</p><h2>過去の起動セッション</h2></div><span class="muted">直近30日・最大20件</span></div><div class="table-wrap"><table><thead><tr><th>開始</th><th>終了</th><th>使用時間</th><th>平均</th><th>電力量</th><th>料金</th></tr></thead><tbody id="sessionRows"></tbody></table></div></section>
+      <p class="notice">PC内部センサーを利用した概算です。コンセント実測ではありません。CPU・GPUは取得可能な内部センサー、基板・電源損失・モニターは設定値で補正します。</p>
+    </section>
+
+    <section id="storageView" class="view">
+      <div class="view-intro"><div><p class="eyebrow">STORAGE MAP</p><h2>容量を「何に使っているか」で見る</h2><p class="muted">スキャンはこのタブを開き、開始ボタンを押した時だけ動きます。</p></div><button id="reloadStorage" class="button secondary">容量画面を再読込</button></div>
+      <div id="storageLoading" class="loading-card">容量画面を起動しています…</div>
+      <iframe id="storageFrame" class="storage-frame hidden" title="PC容量マップ"></iframe>
+    </section>
+
+    <section id="systemView" class="view">
+      <div class="view-intro"><div><p class="eyebrow">PC STATUS</p><h2>今の負荷と記録状態</h2><p class="muted">このタブを表示している間だけ約2秒ごとに更新します。</p></div><div class="segmented" id="systemRanges"><button data-system-range="15m" class="active">直近15分</button><button data-system-range="today">今日</button></div></div>
+      <section class="hero-grid system-grid">
+        <article class="metric"><span>CPU使用率</span><strong id="cpuUsage">--<small>%</small></strong><em id="cpuName">--</em></article>
+        <article class="metric"><span>GPU使用率</span><strong id="gpuUsage">--<small>%</small></strong><em id="gpuDetail">--</em></article>
+        <article class="metric"><span>メモリ使用率</span><strong id="ramUsage">--<small>%</small></strong><em id="ramDetail">--</em></article>
+        <article class="metric live"><span>WattSeal記録</span><strong id="collectorState" class="text-value">--</strong><em id="collectorDetail">確認中</em></article>
+      </section>
+      <section class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">UTILIZATION</p><h2>CPU・GPU・メモリ使用率</h2></div><span class="muted">%</span></div><div class="chart-wrap"><canvas id="systemChart" height="280"></canvas><p id="systemChartEmpty" class="empty hidden">WattSeal DBに使用率履歴がない場合は現在値のみ表示します。</p></div></section>
+      <section class="two-column">
+        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">MACHINE</p><h2>PC情報</h2></div></div><dl class="detail-list"><div><dt>稼働時間</dt><dd id="uptime">--</dd></div><div><dt>GPU温度</dt><dd id="gpuTemperature">--</dd></div><div><dt>GPU消費電力</dt><dd id="gpuPower">--</dd></div><div><dt>最終計測</dt><dd id="lastSample">--</dd></div></dl></article>
+        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">DRIVES</p><h2>ドライブ空き容量</h2></div></div><div id="driveStatusList" class="bar-list"></div></article>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="settingsDialog">
+    <form id="settingsForm" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">SETTINGS & DATA</p><h2>設定・データ管理</h2></div><button type="button" id="closeSettings" class="icon-button" aria-label="閉じる">×</button></div>
+      <div class="settings-tabs"><button type="button" data-settings-view="calculation" class="active">計算設定</button><button type="button" data-settings-view="data">データ管理</button></div>
+      <section id="calculationSettings" class="settings-view active">
+        <label>電力単価 <span><input id="electricityRate" type="number" min="0" max="200" step="0.01" required> 円/kWh</span></label>
+        <label>センサー補正倍率 <span><input id="sensorFactor" type="number" min="0.5" max="2" step="0.01" required> 倍</span></label>
+        <label>マザーボード・ファン等 <span><input id="baseWatts" type="number" min="0" max="300" step="1" required> W</span></label>
+        <label>モニター追加 <span><input id="monitorWatts" type="number" min="0" max="500" step="1" required> W</span></label>
+        <label>月間料金の目安 <span><input id="monthlyBudget" type="number" min="0" max="100000" step="10" required> 円</span></label>
+        <label class="stacked">ゲーム判定キーワード<textarea id="gameKeywords" rows="3" placeholder="steam, terraria, ゲームのexe名"></textarea></label>
+        <p class="help">月間料金の目安は0円で無効です。分類キーワードは過去データにも即時反映されます。PC本体だけならモニターは0Wのままにします。</p>
+        <div class="dialog-actions"><button id="resetSettings" class="button secondary" type="button">初期値へ戻す</button><button class="button" type="submit">保存して再計算</button></div>
+      </section>
+      <section id="dataSettings" class="settings-view">
+        <div id="dataSummary" class="data-summary">データ状況を確認しています…</div>
+        <p id="dataWarning" class="warning hidden"></p>
+        <a id="backupCsv" class="button secondary wide" href="/api/export?range=all">全期間CSVを保存</a>
+        <button id="clearStorageData" class="button secondary wide danger-soft" type="button">容量スキャン結果を削除</button>
+        <button id="clearPowerData" class="button wide danger" type="button">電力履歴をすべて初期化</button>
+        <p class="help">削除は自動では行いません。電力履歴の初期化後もWattSealは自動で再開します。</p>
+      </section>
+    </form>
+  </dialog>
+  <script src="/app.js" defer></script>
+</body>
+</html>
