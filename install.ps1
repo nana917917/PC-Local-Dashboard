@@ -1,22 +1,26 @@
 ﻿$ErrorActionPreference = 'Stop'
 $sourceDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logPath = Join-Path $sourceDir 'setup-log.txt'
-$transcriptStarted = $false
+
+function Write-SetupLog {
+    param([string]$Level, [string]$Message)
+    $clean = [regex]::Replace([string]$Message, '\s+', ' ').Trim()
+    if ($clean.Length -gt 240) { $clean = $clean.Substring(0, 237) + '...' }
+    $line = '[{0}][{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $clean
+    try { Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8 } catch {}
+}
+
+try { Set-Content -LiteralPath $logPath -Value '' -Encoding UTF8 } catch {}
+Write-SetupLog 'INFO' 'セットアップを開始しました。'
 
 trap {
     Write-Host ''
-    Write-Host ('[エラー] ' + $_.Exception.Message) -ForegroundColor Red
+    $message = [regex]::Replace([string]$_.Exception.Message, '\s+', ' ').Trim()
+    Write-SetupLog 'ERROR' $message
+    Write-Host ('[エラー] ' + $message) -ForegroundColor Red
     Write-Host ('詳しいログ: ' + $logPath)
-    if ($transcriptStarted) {
-        try { Stop-Transcript | Out-Null } catch {}
-    }
     exit 1
 }
-
-try {
-    Start-Transcript -LiteralPath $logPath -Force | Out-Null
-    $transcriptStarted = $true
-} catch {}
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
@@ -58,7 +62,11 @@ function Stop-StorageProcess {
 }
 
 function Stop-WattSealProcess {
-    $processes = @(Get-Process -Name 'WattSeal' -ErrorAction SilentlyContinue)
+    $targetPath = [System.IO.Path]::GetFullPath((Join-Path $appDir 'WattSeal.exe'))
+    $processIds = @(Get-CimInstance Win32_Process -Filter "Name='WattSeal.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.ExecutablePath -eq $targetPath } |
+        Select-Object -ExpandProperty ProcessId)
+    $processes = @($processIds | ForEach-Object { Get-Process -Id $_ -ErrorAction SilentlyContinue })
     if ($processes.Count -eq 0) {
         return
     }
@@ -90,7 +98,6 @@ function Stop-WattSealProcess {
 }
 
 Write-Host 'PC Local Dashboardをセットアップします。'
-Write-Host ('実行元: ' + $sourceDir)
 
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
 if (-not $nodeCommand) {
@@ -103,6 +110,7 @@ if ($nodeVersion -lt [version]'22.5.0') {
     throw "Node.js 22.5以降が必要です。現在: $nodeVersionText"
 }
 Write-Host ("[OK] Node.js $nodeVersionText")
+Write-SetupLog 'OK' ("Node.js $nodeVersionTextを確認しました。")
 
 $configPath = Join-Path $appDir 'config.json'
 $savedConfig = $null
@@ -131,6 +139,7 @@ if (Test-Path -LiteralPath $storageMapDir) {
     )
 }
 Write-Host '[OK] アプリ本体を配置しました。'
+Write-SetupLog 'OK' 'アプリ本体を配置しました。'
 
 if ($null -ne $savedConfig) {
     Set-Content -LiteralPath $configPath -Value $savedConfig -Encoding UTF8
@@ -142,27 +151,42 @@ if (-not (Test-Path -LiteralPath $configPath)) {
         baseWatts = 25
         monitorWatts = 0
         monthlyBudget = 0
+        lanAccess = $false
         gameKeywords = @('steam', 'epicgames', 'riotclient', 'valorant', 'apex', 'genshin', 'terraria', 'edf', 'earthdefenseforce', 'darkanddarker', 'mgs', 'metalgear')
     } | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding UTF8
 }
 
 $wattSealPath = Join-Path $appDir 'WattSeal.exe'
 Write-Host '検証済みの計測エンジン WattSeal v1.0.2を公式GitHubから取得しています...'
+Write-SetupLog 'INFO' 'WattSeal v1.0.2の公式配布ファイルを確認しています。'
 $headers = @{ 'User-Agent' = 'PCPowerHistory-Setup' }
 $downloadUrl = 'https://github.com/Daminoup88/WattSeal/releases/download/v1.0.2/WattSeal-windows.exe'
-$expectedDigest = $null
+$expectedHash = 'd5b4f06020c8cb2eb8b0930d56a597787d0798234538deadc6f32b4a56d0d483'
+$apiFailed = $false
+$apiDigestMismatch = $false
 try {
     $release = Invoke-RestMethod -UseBasicParsing -Uri 'https://api.github.com/repos/Daminoup88/WattSeal/releases/tags/v1.0.2' -Headers $headers
     $asset = $release.assets |
         Where-Object { $_.name -match '(?i)windows.*\.exe$' } |
         Select-Object -First 1
     if ($asset) {
-        $downloadUrl = $asset.browser_download_url
-        $expectedDigest = $asset.digest
-        Write-Host ('[OK] Release asset: ' + $asset.name)
+        if ($asset.digest -and $asset.digest -match '^sha256:(.+)$' -and $Matches[1].ToLowerInvariant() -ne $expectedHash) {
+            $apiDigestMismatch = $true
+        } else {
+            $downloadUrl = $asset.browser_download_url
+            Write-Host ('[OK] Release asset: ' + $asset.name)
+            Write-SetupLog 'OK' ('公式Releaseの配布名を確認しました: ' + $asset.name)
+        }
     }
 } catch {
+    $apiFailed = $true
+}
+if ($apiDigestMismatch) {
+    throw '公式ReleaseのSHA-256が固定値と一致しません。'
+}
+if ($apiFailed) {
     Write-Host '[注意] GitHub APIを取得できないため、公式の固定URLから取得します。'
+    Write-SetupLog 'WARN' 'GitHub APIに接続できないため、固定URLを使用します。固定SHA-256は引き続き検証します。'
 }
 
 $downloadPath = Join-Path $env:TEMP ('PCPowerHistory-' + [guid]::NewGuid().ToString('N') + '.exe')
@@ -172,12 +196,10 @@ try {
         throw 'ダウンロードしたファイルが小さすぎます。'
     }
     $downloadHash = (Get-FileHash -LiteralPath $downloadPath -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($expectedDigest -and $expectedDigest -match '^sha256:(.+)$') {
-        $expectedHash = $Matches[1].ToLowerInvariant()
-        if ($downloadHash -ne $expectedHash) {
-            throw 'WattSealのSHA-256が一致しません。'
-        }
+    if ($downloadHash -ne $expectedHash) {
+        throw 'WattSealのSHA-256が一致しません。'
     }
+    Write-SetupLog 'OK' 'WattSealのSHA-256検証に成功しました。'
 
     $installed = $false
     if (Test-Path -LiteralPath $wattSealPath) {
@@ -218,6 +240,7 @@ try {
         throw '配置後のWattSeal.exeが見つかりません。'
     }
     Write-Host '[OK] 計測エンジンを取得しました。'
+    Write-SetupLog 'OK' 'WattSeal v1.0.2を配置しました。'
 }
 finally {
     Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue
@@ -246,7 +269,7 @@ $dashboardShortcut.Save()
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PCLocalDashboard'
 New-Item -Path $uninstallKey -Force | Out-Null
 Set-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'PC Local Dashboard'
-Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.10.0'
+Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.11.0'
 Set-ItemProperty -Path $uninstallKey -Name Publisher -Value 'PC Local Dashboard contributors'
 Set-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installDir
 Set-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value "$env:SystemRoot\System32\powercpl.dll"
@@ -254,6 +277,7 @@ Set-ItemProperty -Path $uninstallKey -Name UninstallString -Value ('"' + $env:Sy
 Set-ItemProperty -Path $uninstallKey -Name NoModify -Type DWord -Value 1
 Set-ItemProperty -Path $uninstallKey -Name NoRepair -Type DWord -Value 1
 Write-Host '[OK] 自動起動、デスクトップアイコン、アンインストール情報を設定しました。'
+Write-SetupLog 'OK' '自動起動、ショートカット、アンインストール情報を設定しました。'
 
 $collectorAlreadyRunning = [bool](Get-Process -Name 'WattSeal' -ErrorAction SilentlyContinue)
 if (-not $collectorAlreadyRunning) {
@@ -272,14 +296,12 @@ if (-not $collectorStarted) {
     throw 'WattSealを起動できませんでした。Windows DefenderまたはSmartScreenの確認画面を確認してください。'
 }
 Write-Host '[OK] 自動記録プロセスが動作しています。'
+Write-SetupLog 'OK' '自動記録プロセスが動作しています。'
 
 Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList ('"' + (Join-Path $appDir 'dashboard.vbs') + '"')
 
 Write-Host ''
 Write-Host 'セットアップ完了。以後はWindows起動時に自動記録されます。'
 Write-Host '確認するときは、デスクトップの「PC Local Dashboard」を開いてください。'
-if ($transcriptStarted) {
-    Stop-Transcript | Out-Null
-    $transcriptStarted = $false
-}
+Write-SetupLog 'DONE' 'セットアップが完了しました。'
 exit 0

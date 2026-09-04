@@ -51,6 +51,13 @@ function setStatus(text, type = '') {
   byId('statusText').className = `status ${type}`;
 }
 
+function setOverviewStatus(text, type = '') {
+  const host = byId('overviewStatus');
+  if (!host) return;
+  host.textContent = text;
+  host.className = `state-chip ${type}`;
+}
+
 function canvasContext(canvas) {
   const rect = canvas.getBoundingClientRect();
   const ratio = Math.max(1, window.devicePixelRatio || 1);
@@ -109,7 +116,12 @@ function setPowerChartModel(model) {
 
 function drawLineChart(canvas, points, series, options = {}) {
   const { ctx, width, height } = canvasContext(canvas);
-  const values = points.flatMap((point) => series.map((item) => Number(point[item.key])).filter(Number.isFinite));
+  const valueOf = (point, key) => {
+    if (point[key] == null || point[key] === '') return null;
+    const value = Number(point[key]);
+    return Number.isFinite(value) ? value : null;
+  };
+  const values = points.flatMap((point) => series.map((item) => valueOf(point, item.key)).filter((value) => value !== null));
   const maxValue = Math.max(options.minimumMax ?? 10, ...values, .01) * 1.12;
   const area = drawAxes(ctx, width, height, maxValue, options.unit || '');
   if (!points.length) return false;
@@ -124,9 +136,11 @@ function drawLineChart(canvas, points, series, options = {}) {
     ctx.fillStyle = gradient; ctx.beginPath();
     let previousY = null;
     points.forEach((point, index) => {
-      const value = Number(point[item.key]);
+      const value = valueOf(point, item.key);
+      if (value === null) { previousY = null; return; }
       const y = area.top + (1 - value / maxValue) * area.plotHeight;
       if (index === 0) ctx.moveTo(xPositions[index], area.top + area.plotHeight);
+      if (previousY === null) ctx.moveTo(xPositions[index], area.top + area.plotHeight);
       if (options.step && previousY !== null) ctx.lineTo(xPositions[index], previousY);
       ctx.lineTo(xPositions[index], y);
       previousY = y;
@@ -137,8 +151,8 @@ function drawLineChart(canvas, points, series, options = {}) {
     ctx.strokeStyle = item.color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
     ctx.beginPath(); let drawing = false; let previousStamp = null; let previousY = null;
     for (const point of points) {
-      const value = Number(point[item.key]);
-      if (!Number.isFinite(value)) { drawing = false; previousStamp = null; continue; }
+      const value = valueOf(point, item.key);
+      if (value === null) { drawing = false; previousStamp = null; previousY = null; continue; }
       const stamp = Number(point.timestamp);
       const x = area.left + (stamp - first) / (last - first) * area.plotWidth;
       const y = area.top + (1 - value / maxValue) * area.plotHeight;
@@ -297,6 +311,17 @@ function renderChartInsights(data) {
   byId('peakBucketDetail').textContent = peak ? `${fullBucketLabel(peak, data.historyGranularity)}・平均${one.format(peak.averageWatts)}W` : '集計中';
 }
 
+function renderHistoryLog(data) {
+  const history = data.history || [];
+  const granularity = data.historyGranularity === 'hour' ? '時間別' : '日別';
+  byId('historyLogSummary').textContent = `${granularity}・${integer.format(history.length)}区間`;
+  const visible = [...history].reverse().slice(0, 120);
+  byId('historyLogRows').innerHTML = visible.length ? visible.map((item) => `<tr><td>${fullBucketLabel(item, data.historyGranularity)}</td><td>${money.format(item.cost || 0)}円</td><td>${Number(item.adjustedKwh || 0).toFixed(4)} kWh</td><td>${one.format(item.averageWatts || 0)} W</td><td>${formatDuration(item.activeSeconds || 0)}</td></tr>`).join('') : '<tr><td colspan="5" class="muted">この期間の記録はまだありません。</td></tr>';
+  byId('historyLogNote').textContent = history.length > visible.length
+    ? `新しい${integer.format(visible.length)}区間を表示しています。全${integer.format(history.length)}区間はCSV出力で保存できます。`
+    : 'グラフの区間を新しい順に表示しています。停止・スリープ中の区間は記録されません。';
+}
+
 function hidePowerTooltip() {
   byId('powerCrosshair').classList.add('hidden');
   byId('powerTooltip').classList.add('hidden');
@@ -338,11 +363,13 @@ function handlePowerChartPointer(event) {
 
 function renderSummary(data) {
   state.summary = data;
-  byId('currentWatts').innerHTML = `${one.format(data.current.watts || 0)}<small>W</small>`;
   const age = data.current.ageSeconds;
+  const isFresh = age != null && age < 15;
+  byId('currentWatts').innerHTML = isFresh ? `${one.format(data.current.watts || 0)}<small>W</small>` : `--<small>W</small>`;
   const hourlyCost = data.insights?.runningCostPerHour;
   byId('currentAge').textContent = age == null ? '計測待ち'
-    : `${age < 8 ? '記録中' : `${Math.round(age)}秒前`}・このまま1時間 ${money.format(hourlyCost || 0)}円`;
+    : isFresh ? `${age < 8 ? '記録中' : `${Math.round(age)}秒前`}・このまま1時間 ${money.format(hourlyCost || 0)}円`
+      : `現在値なし・最終 ${dateTime(data.current.timestamp)}`;
   byId('periodLabel').textContent = `${data.label}の推定料金`;
   byId('periodCost').innerHTML = `${money.format(data.totals.cost || 0)}<small>円</small>`;
   byId('periodRate').textContent = `${data.config.electricityRate}円/kWh`;
@@ -368,9 +395,11 @@ function renderSummary(data) {
   renderCategories(data.applicationCategories || []);
   renderApplications(data.applications || []);
   renderSessions(data.sessions || []);
+  renderHistoryLog(data);
   renderChartInsights(data);
   if (state.chartMode !== 'live') renderPowerChart();
-  setStatus(age != null && age < 15 ? 'WattSealが記録中・データはこのPC内だけに保存' : '計測値の更新を待っています', age != null && age < 15 ? 'ok' : 'stale');
+  setStatus(isFresh ? 'WattSealが記録中・データはこのPC内だけに保存' : '計測値の更新を待っています', isFresh ? 'ok' : 'stale');
+  setOverviewStatus(isFresh ? '記録中' : data.current.timestamp ? '最終値のみ' : '計測待ち', isFresh ? '' : 'stale');
 }
 
 function renderComponents(items) {
@@ -470,7 +499,7 @@ function renderSystem(data) {
   byId('cpuName').textContent = data.cpu.name || '--';
   byId('gpuUsage').innerHTML = `${data.gpu?.usagePercent == null ? '--' : one.format(data.gpu.usagePercent)}<small>%</small>`;
   byId('gpuDetail').textContent = data.gpu ? `${data.gpu.name}・VRAM ${integer.format(data.gpu.memoryUsedMb)}/${integer.format(data.gpu.memoryTotalMb)} MB` : '対応GPU情報なし';
-  byId('ramUsage').innerHTML = `${one.format(data.ram.usagePercent || 0)}<small>%</small>`;
+  byId('ramUsage').innerHTML = `${data.ram.usagePercent == null ? '--' : one.format(data.ram.usagePercent)}<small>%</small>`;
   byId('ramDetail').textContent = `${formatBytes(data.ram.usedBytes)} / ${formatBytes(data.ram.totalBytes)}`;
   byId('collectorState').textContent = data.wattseal.running ? '記録中' : '停止中';
   byId('collectorDetail').textContent = data.wattseal.ageSeconds == null ? 'DB待ち' : `最終 ${Math.round(data.wattseal.ageSeconds)}秒前`;
@@ -480,7 +509,8 @@ function renderSystem(data) {
   byId('lastSample').textContent = data.wattseal.latestSample ? dateTime(data.wattseal.latestSample) : '--';
   byId('driveStatusList').innerHTML = data.drives.length ? data.drives.map((drive) => {
     const used = Math.max(0, drive.total - drive.free); const percent = drive.total ? used / drive.total * 100 : 0;
-    return `<div class="bar-item"><span class="bar-label">${escapeHtml(drive.path)} ${escapeHtml(drive.label)}</span><span class="bar-value">空き ${formatBytes(drive.free)} / ${formatBytes(drive.total)}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(1, percent)}%"></div></div></div>`;
+    const health = drive.health ? `・健康 ${escapeHtml(drive.health)}` : '';
+    return `<div class="bar-item"><span class="bar-label">${escapeHtml(drive.path)} ${escapeHtml(drive.label)}</span><span class="bar-value">空き ${formatBytes(drive.free)} / ${formatBytes(drive.total)}${health}</span><div class="bar-track"><div class="bar-fill" style="width:${Math.max(1, percent)}%"></div></div></div>`;
   }).join('') : '<p class="muted">ドライブ情報を取得できませんでした。</p>';
   const shown = drawLineChart(byId('systemChart'), data.history || [], [
     { key: 'cpu', label: 'CPU', color: '#4aa8ff' }, { key: 'gpu', label: 'GPU', color: '#56e0a0' }, { key: 'ram', label: 'RAM', color: '#ffb65b' },
@@ -519,25 +549,35 @@ function selectView(view) {
 
 async function openSettings() {
   try {
-    const [config, status] = await Promise.all([json('/api/settings'), json('/api/data-status')]);
+    const [config, status, access] = await Promise.all([json('/api/settings'), json('/api/data-status'), json('/api/access-info')]);
     for (const key of ['electricityRate', 'sensorFactor', 'baseWatts', 'monitorWatts', 'monthlyBudget']) byId(key).value = config[key];
     byId('gameKeywords').value = (config.gameKeywords || []).join(', ');
+    byId('lanAccess').checked = Boolean(config.lanAccess);
     byId('dataSummary').innerHTML = `バージョン <strong>${escapeHtml(status.version)}</strong><br>電力履歴 <strong>${formatBytes(status.databaseBytes)}</strong>・${integer.format(status.recordedDays)}日分<br>記録開始 ${status.startedAt ? dateTime(status.startedAt) : 'まだありません'}<br>容量スキャン結果 <strong>${formatBytes(status.storageCacheBytes)}</strong>`;
     byId('dataWarning').textContent = status.warning || '';
     byId('dataWarning').classList.toggle('hidden', !status.warning);
     byId('backupCsv').href = '/api/export?range=all';
+    byId('accessInfo').innerHTML = access.lanAccess
+      ? `<strong>スマホ用URL</strong><br>${access.urls.map((url) => `<code>${escapeHtml(url)}</code>`).join('<br>') || 'LAN側のアドレスを取得できませんでした。'}<br><span>PCとスマホを同じWi-Fiへ接続して開いてください。</span>`
+      : '<strong>現在はPC内だけで開く設定です。</strong><br>上のスイッチを有効にすると、再起動後に同一Wi-Fiのスマホから開けます。';
     byId('settingsDialog').showModal();
   } catch (error) { alert(error.message); }
 }
 
 async function saveSettings(event) {
   event.preventDefault();
-  await json('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+  const result = await json('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
     electricityRate: byId('electricityRate').value, sensorFactor: byId('sensorFactor').value,
     baseWatts: byId('baseWatts').value, monitorWatts: byId('monitorWatts').value,
     monthlyBudget: byId('monthlyBudget').value, gameKeywords: byId('gameKeywords').value,
+    lanAccess: byId('lanAccess').checked,
   }) });
   byId('settingsDialog').close(); await loadSummary(); await loadRealtime();
+  if (result.restartRequired) {
+    setStatus('接続設定を反映するため再起動しています…', 'stale');
+    try { await json('/api/restart', { method: 'POST' }); } catch (_) {}
+    setTimeout(() => location.reload(), 1600);
+  }
 }
 
 async function resetSettings() {

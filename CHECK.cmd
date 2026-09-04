@@ -4,7 +4,7 @@ title PC Local Dashboard Check
 set "INSTALL_DIR=%LOCALAPPDATA%\PCPowerHistory\app"
 set "SOURCE_DIR=%~dp0"
 
-echo PC Local Dashboard Status Check
+echo PC Local Dashboard 状態確認
 echo.
 where node.exe 2>nul
 if errorlevel 1 (
@@ -25,12 +25,12 @@ if errorlevel 1 (echo [NG] WattSeal process is not running) else (echo [OK] Watt
 echo.
 
 if exist "%SOURCE_DIR%setup-log.txt" (
-  echo Recent setup log:
+  echo 最新のセットアップ要約ログ:
   echo ----------------------------------------
-  powershell.exe -NoProfile -Command "Get-Content -LiteralPath '%SOURCE_DIR%setup-log.txt' -Tail 60"
+  powershell.exe -NoProfile -Command "Get-Content -LiteralPath '%SOURCE_DIR%setup-log.txt' -Tail 40"
   echo ----------------------------------------
 ) else (
-  echo setup-log.txt does not exist.
+  echo setup-log.txt はまだありません。
 )
 echo.
 pause

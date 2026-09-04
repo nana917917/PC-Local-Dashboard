@@ -17,15 +17,15 @@ const STORAGE_SERVER_PATH = path.join(APP_DIR, 'storage-map', 'server.js');
 const STORAGE_RESULT_PATH = path.join(APP_DIR, 'storage-map', 'data', 'last-scan.json');
 const WATTSEAL_PATH = path.join(APP_DIR, 'WattSeal.exe');
 const PORT = Number(process.env.PC_POWER_PORT || 17891);
-const HOST = '127.0.0.1';
 const UJ_PER_KWH = 3_600_000_000_000;
-const APP_VERSION = '0.10.0';
+const APP_VERSION = '0.11.0';
 const DEFAULT_CONFIG = Object.freeze({
   electricityRate: 31,
   sensorFactor: 1.10,
   baseWatts: 25,
   monitorWatts: 0,
   monthlyBudget: 0,
+  lanAccess: false,
   gameKeywords: [
     'steam', 'epicgames', 'riotclient', 'valorant', 'apex', 'genshin',
     'terraria', 'edf', 'earthdefenseforce', 'darkanddarker', 'mgs', 'metalgear',
@@ -37,6 +37,15 @@ let lastActivity = Date.now();
 function numberInRange(value, fallback, min, max) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
+function booleanValue(value, fallback = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (value.toLowerCase() === 'true') return true;
+    if (value.toLowerCase() === 'false') return false;
+  }
+  return fallback;
 }
 
 function keywordList(value, fallback = []) {
@@ -60,6 +69,7 @@ function loadConfig() {
     baseWatts: numberInRange(source.baseWatts, DEFAULT_CONFIG.baseWatts, 0, 300),
     monitorWatts: numberInRange(source.monitorWatts, DEFAULT_CONFIG.monitorWatts, 0, 500),
     monthlyBudget: numberInRange(source.monthlyBudget, DEFAULT_CONFIG.monthlyBudget, 0, 100000),
+    lanAccess: booleanValue(source.lanAccess, DEFAULT_CONFIG.lanAccess),
     gameKeywords: keywordList(source.gameKeywords, DEFAULT_CONFIG.gameKeywords),
   };
 }
@@ -72,6 +82,7 @@ function saveConfig(input) {
     baseWatts: numberInRange(input.baseWatts, current.baseWatts, 0, 300),
     monitorWatts: numberInRange(input.monitorWatts, current.monitorWatts, 0, 500),
     monthlyBudget: numberInRange(input.monthlyBudget, current.monthlyBudget, 0, 100000),
+    lanAccess: booleanValue(input.lanAccess, current.lanAccess),
     gameKeywords: keywordList(input.gameKeywords, current.gameKeywords),
   };
   const tempPath = `${CONFIG_PATH}.tmp`;
@@ -79,6 +90,9 @@ function saveConfig(input) {
   fs.renameSync(tempPath, CONFIG_PATH);
   return next;
 }
+
+const HOST = process.env.PC_POWER_HOST || (loadConfig().lanAccess ? '0.0.0.0' : '127.0.0.1');
+const LOCAL_HOST = '127.0.0.1';
 
 function openDatabase() {
   if (!fs.existsSync(DB_PATH)) {
@@ -645,10 +659,21 @@ async function gpuStatus() {
     '--format=csv,noheader,nounits',
   ]);
   if (!output) return null;
-  const values = output.split(/\r?\n/)[0].split(',').map((value) => value.trim());
+  const rows = output.split(/\r?\n/).filter(Boolean).map((line) => line.split(',').map((value) => value.trim()));
+  if (!rows.length) return null;
+  const names = rows.map((values) => values[0]).filter(Boolean);
+  const numbers = (index) => rows.map((values) => Number(values[index])).filter(Number.isFinite);
+  const average = (values) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  const maximum = (values) => values.length ? Math.max(...values) : null;
+  const sum = (values) => values.length ? values.reduce((total, value) => total + value, 0) : null;
   return {
-    name: values[0] || 'NVIDIA GPU', usagePercent: Number(values[1]), temperatureC: Number(values[2]),
-    memoryUsedMb: Number(values[3]), memoryTotalMb: Number(values[4]), powerWatts: Number(values[5]),
+    name: names.length > 1 ? `${names.length}基（${names.join(' / ')}）` : names[0] || 'NVIDIA GPU',
+    count: rows.length,
+    usagePercent: maximum(numbers(1)),
+    temperatureC: maximum(numbers(2)),
+    memoryUsedMb: sum(numbers(3)),
+    memoryTotalMb: sum(numbers(4)),
+    powerWatts: sum(numbers(5)),
   };
 }
 
@@ -659,12 +684,17 @@ async function driveStatus() {
       return [{ path: '/', label: os.hostname(), total: Number(stat.blocks) * Number(stat.bsize), free: Number(stat.bavail) * Number(stat.bsize), health: null }];
     } catch (_) { return []; }
   }
-  const script = "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object @{N='path';E={$_.DeviceID+'\\'}},VolumeName,@{N='total';E={[double]$_.Size}},@{N='free';E={[double]$_.FreeSpace}} | ConvertTo-Json -Compress";
+  const script = "$logical=@(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object @{N='path';E={$_.DeviceID+'\\'}},VolumeName,@{N='total';E={[double]$_.Size}},@{N='free';E={[double]$_.FreeSpace}}); $physical=@(Get-PhysicalDisk -ErrorAction SilentlyContinue | Select-Object HealthStatus,OperationalStatus); [pscustomobject]@{logical=$logical; physical=$physical} | ConvertTo-Json -Compress";
   const output = await execFileText('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', script]);
   if (!output) return [];
   try {
     const parsed = JSON.parse(output);
-    return (Array.isArray(parsed) ? parsed : [parsed]).map((drive) => ({ path: drive.path, label: drive.VolumeName || 'ローカルディスク', total: Number(drive.total || 0), free: Number(drive.free || 0), health: null }));
+    const physical = Array.isArray(parsed.physical) ? parsed.physical : parsed.physical ? [parsed.physical] : [];
+    const health = physical.length
+      ? physical.every((drive) => String(drive.HealthStatus || '').toLowerCase() === 'healthy' && String(drive.OperationalStatus || '').toLowerCase().includes('ok')) ? '正常' : '要確認'
+      : null;
+    const logical = Array.isArray(parsed.logical) ? parsed.logical : parsed.logical ? [parsed.logical] : [];
+    return logical.map((drive) => ({ path: drive.path, label: drive.VolumeName || 'ローカルディスク', total: Number(drive.total || 0), free: Number(drive.free || 0), health }));
   } catch (_) { return []; }
 }
 
@@ -681,10 +711,10 @@ function usageHistory(db, range) {
     if (!hasTable(db, table)) continue;
     const column = firstExistingColumn(db, table, candidates);
     if (!column) continue;
-    const rows = db.prepare(`SELECT CAST(t.timestamp / ? AS INTEGER) * ? AS stamp, AVG(COALESCE(d.${column}, 0)) AS value FROM timestamp t JOIN ${table} d ON d.timestamp_id=t.id WHERE t.timestamp >= ? GROUP BY stamp ORDER BY stamp`).all(bucketMs, bucketMs, start);
+    const rows = db.prepare(`SELECT CAST(t.timestamp / ? AS INTEGER) * ? AS stamp, AVG(d.${column}) AS value FROM timestamp t JOIN ${table} d ON d.timestamp_id=t.id WHERE t.timestamp >= ? GROUP BY stamp ORDER BY stamp`).all(bucketMs, bucketMs, start);
     for (const row of rows) {
       const point = merged.get(Number(row.stamp)) || { timestamp: Number(row.stamp), cpu: null, gpu: null, ram: null };
-      point[key] = Number(row.value);
+      point[key] = row.value == null ? null : Number(row.value);
       merged.set(point.timestamp, point);
     }
   }
@@ -751,13 +781,22 @@ async function clearStorageCache() {
   return { cleared: true };
 }
 
+async function stopOwnWattSeal() {
+  if (process.platform !== 'win32') return;
+  const targetPath = WATTSEAL_PATH.replace(/'/g, "''");
+  const script = `$target='${targetPath}'; @(Get-CimInstance Win32_Process -Filter \"Name='WattSeal.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $target } | Select-Object -ExpandProperty ProcessId)`;
+  const output = await execFileText('powershell.exe', ['-NoLogo', '-NoProfile', '-Command', script]);
+  const processIds = output.split(/\r?\n/).map((value) => Number(value.trim())).filter((value) => Number.isInteger(value) && value > 0);
+  for (const processId of processIds) await execFileText('taskkill.exe', ['/PID', String(processId), '/T', '/F']);
+}
+
 async function clearPowerHistory(confirmation) {
   if (confirmation !== 'DELETE_POWER_HISTORY') throw Object.assign(new Error('確認文字列が一致しません。'), { statusCode: 400 });
   if (path.dirname(path.resolve(DB_PATH)) !== path.resolve(APP_DIR) || path.basename(DB_PATH) !== 'power_monitoring.db') {
     throw Object.assign(new Error('安全確認のため、標準保存場所にある履歴だけ初期化できます。'), { statusCode: 400 });
   }
   if (process.platform !== 'win32') throw Object.assign(new Error('履歴の初期化はWindows上のインストール版から実行してください。'), { statusCode: 400 });
-  await execFileText('taskkill.exe', ['/IM', 'WattSeal.exe', '/T', '/F']);
+  await stopOwnWattSeal();
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       for (const target of [DB_PATH, `${DB_PATH}-wal`, `${DB_PATH}-shm`]) if (fs.existsSync(target)) fs.unlinkSync(target);
@@ -833,41 +872,129 @@ function readBody(req, limit = 8192) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let settled = false;
     req.on('data', (chunk) => {
+      if (settled) return;
       size += chunk.length;
       if (size > limit) {
-        reject(new Error('送信内容が大きすぎます。'));
+        settled = true;
+        reject(Object.assign(new Error('送信内容が大きすぎます。'), { statusCode: 413 }));
         req.destroy();
         return;
       }
       chunks.push(chunk);
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks).toString('utf8')); } });
+    req.on('error', (error) => { if (!settled) { settled = true; reject(error); } });
   });
 }
 
-async function openStorageMap() {
+function parseJson(text) {
+  try { return JSON.parse(text); } catch (_) { throw Object.assign(new Error('送信内容のJSON形式が正しくありません。'), { statusCode: 400 }); }
+}
+
+function requestHostname(req) {
+  const rawHost = String(req.headers.host || '').trim();
+  if (!rawHost) return LOCAL_HOST;
+  try {
+    const parsed = new URL(`http://${rawHost}`);
+    if (parsed.hostname === '0.0.0.0' || parsed.hostname === '::') return LOCAL_HOST;
+    return parsed.hostname;
+  } catch (_) {
+    return LOCAL_HOST;
+  }
+}
+
+function sameOriginRequest(req) {
+  const origin = String(req.headers.origin || '').trim();
+  if (!origin) return true;
+  try {
+    const expected = new URL(`http://${req.headers.host}`);
+    const actual = new URL(origin);
+    return actual.protocol === 'http:' && actual.host === expected.host;
+  } catch (_) {
+    return false;
+  }
+}
+
+function isLocalNetworkAddress(address) {
+  const value = String(address || '').replace(/^::ffff:/i, '').split('%')[0].toLowerCase();
+  if (value === '::1' || value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+  const octets = value.split('.').map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return octets[0] === 127 || octets[0] === 10 || (octets[0] === 192 && octets[1] === 168)
+    || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31);
+}
+
+function networkInfoPayload() {
+  const urls = [];
+  try {
+    for (const addresses of Object.values(os.networkInterfaces())) {
+      for (const address of addresses || []) {
+        if ((address.family === 'IPv4' || address.family === 4) && !address.internal) urls.push(`http://${address.address}:${PORT}`);
+      }
+    }
+  } catch (_) {}
+  return {
+    lanAccess: HOST === '0.0.0.0',
+    localUrl: `http://${LOCAL_HOST}:${PORT}`,
+    urls: [...new Set(urls)],
+  };
+}
+
+function restartDashboard() {
+  if (process.platform !== 'win32') throw Object.assign(new Error('ダッシュボードの自動再起動はWindows版でのみ使用できます。'), { statusCode: 400 });
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+  const wscriptPath = path.join(systemRoot, 'System32', 'wscript.exe');
+  const dashboardPath = path.join(APP_DIR, 'dashboard.vbs');
+  if (!fs.existsSync(wscriptPath) || !fs.existsSync(dashboardPath)) throw Object.assign(new Error('ダッシュボードの再起動ファイルが見つかりません。'), { statusCode: 503 });
+  setTimeout(() => {
+    server.close(() => {
+      execFile(wscriptPath, [dashboardPath], { windowsHide: true }, () => process.exit(0));
+    });
+  }, 250);
+  return { restarting: true };
+}
+
+async function openStorageMap(req) {
   if (!fs.existsSync(STORAGE_SERVER_PATH)) {
     const error = new Error('容量マップが見つかりません。統合版のSETUP.cmdをもう一度実行してください。');
     error.statusCode = 503;
     throw error;
   }
+  const browserHost = requestHostname(req);
+  const storageUrl = `http://${browserHost}:17892`;
+  const storageLanAccess = loadConfig().lanAccess;
   try {
     const existing = await fetch('http://127.0.0.1:17892/api/status', { signal: AbortSignal.timeout(500) });
-    if (existing.ok) return { opened: true, alreadyRunning: true, url: 'http://127.0.0.1:17892' };
+    if (existing.ok) {
+      let matchesAccessMode = false;
+      try {
+        const access = await fetch('http://127.0.0.1:17892/api/access-info', { signal: AbortSignal.timeout(500) });
+        const payload = access.ok ? await access.json() : null;
+        matchesAccessMode = payload && Boolean(payload.lanAccess) === storageLanAccess;
+      } catch (_) {}
+      if (matchesAccessMode) return { opened: true, alreadyRunning: true, url: storageUrl };
+      try { await fetch('http://127.0.0.1:17892/api/shutdown', { method: 'POST', signal: AbortSignal.timeout(700) }); } catch (_) {}
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
   } catch (_) {}
   const child = spawn(process.execPath, [STORAGE_SERVER_PATH], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
-    env: { ...process.env, PC_STORAGE_EMBEDDED: '1' },
+    env: { ...process.env, PC_STORAGE_EMBEDDED: '1', PC_STORAGE_HOST: storageLanAccess ? '0.0.0.0' : LOCAL_HOST },
   });
   child.unref();
-  return { opened: true, url: 'http://127.0.0.1:17892' };
+  return { opened: true, url: storageUrl };
 }
 
 const server = http.createServer(async (req, res) => {
+  if (HOST === '0.0.0.0' && !isLocalNetworkAddress(req.socket.remoteAddress)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Local network only');
+    return;
+  }
   lastActivity = Date.now();
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   try {
@@ -893,6 +1020,10 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 200, dataStatusPayload());
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/api/access-info') {
+      jsonResponse(res, 200, networkInfoPayload());
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/api/export') {
       const allowed = new Set(['session', 'today', '7d', 'month', '30d', '90d', 'year', 'all']);
       const range = allowed.has(url.searchParams.get('range')) ? url.searchParams.get('range') : 'month';
@@ -910,25 +1041,37 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/settings') {
-      const body = JSON.parse(await readBody(req));
-      jsonResponse(res, 200, saveConfig(body));
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      const current = loadConfig();
+      const body = parseJson(await readBody(req));
+      const next = saveConfig(body);
+      jsonResponse(res, 200, { ...next, restartRequired: current.lanAccess !== next.lanAccess });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/reset-settings') {
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
       jsonResponse(res, 200, saveConfig(DEFAULT_CONFIG));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/clear-storage-cache') {
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
       jsonResponse(res, 200, await clearStorageCache());
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/clear-power-history') {
-      const body = JSON.parse(await readBody(req));
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      const body = parseJson(await readBody(req));
       jsonResponse(res, 200, await clearPowerHistory(body.confirmation));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/open-storage') {
-      jsonResponse(res, 200, await openStorageMap());
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      jsonResponse(res, 200, await openStorageMap(req));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/restart') {
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      jsonResponse(res, 200, restartDashboard());
       return;
     }
     if (req.method === 'GET') {
@@ -944,7 +1087,7 @@ const server = http.createServer(async (req, res) => {
 
 server.on('error', (error) => {
   if (error.code === 'EADDRINUSE') {
-    if (process.platform === 'win32') execFile('explorer.exe', [`http://${HOST}:${PORT}`], () => process.exit(0));
+    if (process.platform === 'win32') execFile('explorer.exe', [`http://${LOCAL_HOST}:${PORT}`], () => process.exit(0));
     else process.exit(0);
   } else {
     process.exitCode = 1;
@@ -953,7 +1096,7 @@ server.on('error', (error) => {
 
 server.listen(PORT, HOST, () => {
   try { fs.writeFileSync(PID_PATH, String(process.pid), 'utf8'); } catch (_) {}
-  if (process.platform === 'win32') execFile('explorer.exe', [`http://${HOST}:${PORT}`], () => {});
+  if (process.platform === 'win32') execFile('explorer.exe', [`http://${LOCAL_HOST}:${PORT}`], () => {});
 });
 
 function removeOwnPidFile() {

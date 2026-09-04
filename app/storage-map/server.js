@@ -13,7 +13,8 @@ const DATA_DIR = process.env.PC_STORAGE_DATA || path.join(APP_DIR, 'data');
 const RESULT_PATH = path.join(DATA_DIR, 'last-scan.json');
 const PID_PATH = path.join(APP_DIR, 'storage-map.pid');
 const POWER_DASHBOARD_PATH = path.resolve(APP_DIR, '..', 'dashboard.vbs');
-const HOST = '127.0.0.1';
+const HOST = process.env.PC_STORAGE_HOST || '127.0.0.1';
+const LOCAL_HOST = '127.0.0.1';
 const PORT = Number(process.env.PC_STORAGE_PORT || 17892);
 const LARGE_FILE_BYTES = 64 * 1024 * 1024;
 const FILE_STAT_BATCH = 96;
@@ -102,11 +103,11 @@ function categoryFor(filePath, extension) {
     '\\games\\', '\\terraria\\', '\\darkanddarker\\', '\\metal gear', '\\earth defense force',
   ];
   if (gameMarkers.some((marker) => normalized.includes(marker))) return 'ゲーム';
-  for (const [label, extensions] of EXTENSION_GROUPS) {
-    if (extensions.has(extension)) return label;
-  }
   if (normalized.includes('\\windows\\') || normalized.includes('\\program files\\') || normalized.includes('\\appdata\\')) {
     return 'Windows・アプリ';
+  }
+  for (const [label, extensions] of EXTENSION_GROUPS) {
+    if (extensions.has(extension)) return label;
   }
   return 'その他';
 }
@@ -335,7 +336,45 @@ async function pickFolder() {
   return powershell(command);
 }
 
-function openPowerDashboard() {
+function requestHostname(req) {
+  const rawHost = String(req.headers.host || '').trim();
+  if (!rawHost) return LOCAL_HOST;
+  try {
+    const parsed = new URL(`http://${rawHost}`);
+    if (parsed.hostname === '0.0.0.0' || parsed.hostname === '::') return LOCAL_HOST;
+    return parsed.hostname;
+  } catch (_) {
+    return LOCAL_HOST;
+  }
+}
+
+function sameOriginRequest(req) {
+  const origin = String(req.headers.origin || '').trim();
+  if (!origin) return true;
+  try {
+    const expected = new URL(`http://${req.headers.host}`);
+    const actual = new URL(origin);
+    return actual.protocol === 'http:' && actual.host === expected.host;
+  } catch (_) {
+    return false;
+  }
+}
+
+function isLocalNetworkAddress(address) {
+  const value = String(address || '').replace(/^::ffff:/i, '').split('%')[0].toLowerCase();
+  if (value === '::1' || value.startsWith('fe80:') || value.startsWith('fc') || value.startsWith('fd')) return true;
+  const octets = value.split('.').map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  return octets[0] === 127 || octets[0] === 10 || (octets[0] === 192 && octets[1] === 168)
+    || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31);
+}
+
+function isLoopbackAddress(address) {
+  const value = String(address || '').replace(/^::ffff:/i, '').split('%')[0].toLowerCase();
+  return value === '::1' || value.split('.')[0] === '127';
+}
+
+function openPowerDashboard(req) {
   if (process.platform !== 'win32' || !fs.existsSync(POWER_DASHBOARD_PATH)) {
     const error = new Error('PC電気代画面が見つかりません。統合版のSETUP.cmdをもう一度実行してください。');
     error.statusCode = 503;
@@ -344,7 +383,7 @@ function openPowerDashboard() {
   const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
   const wscriptPath = path.join(systemRoot, 'System32', 'wscript.exe');
   execFile(wscriptPath, [POWER_DASHBOARD_PATH], { windowsHide: true }, () => {});
-  return { opened: true, url: 'http://127.0.0.1:17891' };
+  return { opened: true, url: `http://${requestHostname(req)}:17891` };
 }
 
 function jsonResponse(res, status, payload) {
@@ -375,21 +414,33 @@ function readBody(req, limit = 8192) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
+    let settled = false;
     req.on('data', (chunk) => {
+      if (settled) return;
       size += chunk.length;
       if (size > limit) {
-        reject(new Error('送信内容が大きすぎます。'));
+        settled = true;
+        reject(Object.assign(new Error('送信内容が大きすぎます。'), { statusCode: 413 }));
         req.destroy();
       } else {
         chunks.push(chunk);
       }
     });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    req.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks).toString('utf8')); } });
+    req.on('error', (error) => { if (!settled) { settled = true; reject(error); } });
   });
 }
 
+function parseJson(text) {
+  try { return JSON.parse(text); } catch (_) { throw Object.assign(new Error('送信内容のJSON形式が正しくありません。'), { statusCode: 400 }); }
+}
+
 const server = http.createServer(async (req, res) => {
+  if (HOST === '0.0.0.0' && !isLocalNetworkAddress(req.socket.remoteAddress)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('Local network only');
+    return;
+  }
   lastActivity = Date.now();
   const url = new URL(req.url, `http://${HOST}:${PORT}`);
   try {
@@ -398,6 +449,16 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/status') {
       jsonResponse(res, 200, job); return;
+    }
+    if (req.method === 'GET' && url.pathname === '/api/access-info') {
+      jsonResponse(res, 200, { lanAccess: HOST === '0.0.0.0', localUrl: `http://127.0.0.1:${PORT}` }); return;
+    }
+    if (req.method === 'POST' && url.pathname === '/api/shutdown') {
+      if (!isLoopbackAddress(req.socket.remoteAddress)) throw Object.assign(new Error('ローカル接続からのみ実行できます。'), { statusCode: 403 });
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      jsonResponse(res, 200, { shuttingDown: true });
+      setTimeout(() => server.close(() => process.exit(0)), 50);
+      return;
     }
     if (req.method === 'GET' && url.pathname === '/api/result') {
       if (!lastResult) {
@@ -408,20 +469,24 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/pick-folder') {
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
       const selectedPath = await pickFolder();
       jsonResponse(res, 200, { path: selectedPath || null }); return;
     }
     if (req.method === 'POST' && url.pathname === '/api/open-power') {
-      jsonResponse(res, 200, openPowerDashboard()); return;
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      jsonResponse(res, 200, openPowerDashboard(req)); return;
     }
     if (req.method === 'POST' && url.pathname === '/api/scan') {
-      const input = JSON.parse(await readBody(req));
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      const input = parseJson(await readBody(req));
       if (!input.path || typeof input.path !== 'string') throw Object.assign(new Error('調べる場所を指定してください。'), { statusCode: 400 });
       startScan(input.path);
       jsonResponse(res, 202, { status: 'scanning' }); return;
     }
     if (req.method === 'POST' && url.pathname === '/api/open') {
-      const input = JSON.parse(await readBody(req));
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
+      const input = parseJson(await readBody(req));
       if (!lastResult || !input.path || !isInside(lastResult.rootPath, input.path) || !fs.existsSync(input.path)) {
         throw Object.assign(new Error('開けるのは現在のスキャン範囲内だけです。'), { statusCode: 400 });
       }
@@ -429,6 +494,7 @@ const server = http.createServer(async (req, res) => {
       jsonResponse(res, 200, { opened: true }); return;
     }
     if (req.method === 'POST' && url.pathname === '/api/clear') {
+      if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
       if (job.status === 'scanning') throw Object.assign(new Error('スキャン中は削除できません。'), { statusCode: 409 });
       lastResult = null;
       try { if (fs.existsSync(RESULT_PATH)) fs.unlinkSync(RESULT_PATH); } catch (_) {}
@@ -446,7 +512,7 @@ const server = http.createServer(async (req, res) => {
 
 server.on('error', (error) => {
   if (error.code === 'EADDRINUSE') {
-    if (process.platform === 'win32') execFile('explorer.exe', [`http://${HOST}:${PORT}`], () => process.exit(0));
+    if (process.platform === 'win32') execFile('explorer.exe', [`http://${LOCAL_HOST}:${PORT}`], () => process.exit(0));
     else process.exit(0);
   } else {
     process.exitCode = 1;
@@ -455,7 +521,7 @@ server.on('error', (error) => {
 
 server.listen(PORT, HOST, () => {
   try { fs.writeFileSync(PID_PATH, String(process.pid), 'utf8'); } catch (_) {}
-  if (process.platform === 'win32' && process.env.PC_STORAGE_EMBEDDED !== '1') execFile('explorer.exe', [`http://${HOST}:${PORT}`], () => {});
+  if (process.platform === 'win32' && process.env.PC_STORAGE_EMBEDDED !== '1') execFile('explorer.exe', [`http://${LOCAL_HOST}:${PORT}`], () => {});
 });
 
 function removeOwnPidFile() {

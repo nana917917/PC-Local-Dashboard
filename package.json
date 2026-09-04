@@ -1,6 +1,6 @@
 {
   "name": "pc-local-dashboard",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "private": true,
   "description": "Local Windows dashboard for PC power, storage usage, and system status",
   "license": "MIT",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "start": "node app/server.js",
-    "check": "node --check app/server.js && node --check app/public/app.js && node --check app/storage-map/server.js && node --check app/storage-map/public/app.js"
+    "check": "node --check app/server.js && node --check app/public/app.js && node --check app/storage-map/server.js && node --check app/storage-map/public/app.js",
+    "test": "npm run check && node tests/smoke.js"
   }
 }

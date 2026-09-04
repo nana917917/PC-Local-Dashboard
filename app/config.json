@@ -4,6 +4,7 @@
   "baseWatts": 25,
   "monitorWatts": 0,
   "monthlyBudget": 0,
+  "lanAccess": false,
   "gameKeywords": [
     "steam",
     "epicgames",
