@@ -177,6 +177,7 @@ function networkInfoPayload(req) {
     url: `http://${network.address}:${PORT}`,
     network: network.cidr,
     virtual: Boolean(network.virtual),
+    family: network.family,
   }));
   return {
     client: context.kind,
@@ -186,8 +187,8 @@ function networkInfoPayload(req) {
     localUrl: `http://${LOCAL_HOST}:${PORT}`,
     urls: [...new Set(addresses.map((item) => item.url))],
     addresses,
-    // スマホから開く候補（同じサブネットのアドレス）
-    smartphoneUrls: [...new Set(addresses.map((item) => item.url))],
+    // スマホから開く候補。IPv6のリンクローカル（fe80::）は端末から開けないためIPv4だけを出す
+    smartphoneUrls: [...new Set(addresses.filter((item) => item.family === 'ipv4').map((item) => item.url))],
     allowedNetworks: context.networks.map((network) => `${network.cidr}（${network.interfaceName}）`),
     extraAllowedNetworks: context.extraNetworks.map((network) => network.cidr),
     excludedVirtualNetworks: context.virtualNetworks.map((network) => `${network.cidr}（${network.interfaceName}）`),
