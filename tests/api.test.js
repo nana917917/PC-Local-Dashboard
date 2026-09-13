@@ -328,6 +328,41 @@ describe('入力の検証と安全性', () => {
       assert.ok(Number(backup.headers['content-length']) > 1000);
     });
   });
+
+  it('期間削除のAPIは、テスト用DBのような標準外の場所では実行しない', async () => {
+    // 実インストール先（%LOCALAPPDATA%\PCPowerHistory\app\power_monitoring.db）以外では
+    // 削除系APIが必ず拒否されることを確認する（テストで実DBを消さないための安全確認）
+    await withServer('gaps', async (port) => {
+      const before = await request(port, '/api/data-status');
+      const beforeSamples = JSON.parse(before.body).samples;
+
+      const wrongConfirmation = await request(port, '/api/delete-range', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: '2026-01-01', to: '2026-01-02', confirmation: 'DELETE' }),
+      });
+      assert.equal(wrongConfirmation.statusCode, 400);
+      assert.match(wrongConfirmation.body, /確認文字列/);
+
+      const invalidDates = await request(port, '/api/delete-range', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: '2026-02-30', to: 'abc', confirmation: 'DELETE_RANGE' }),
+      });
+      assert.equal(invalidDates.statusCode, 400);
+
+      const notStandardPath = await request(port, '/api/delete-range', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: '2026-01-01', to: '2026-01-02', confirmation: 'DELETE_RANGE' }),
+      });
+      assert.equal(notStandardPath.statusCode, 400);
+      assert.match(notStandardPath.body, /標準|Windows/, '標準の保存場所以外では削除しない');
+
+      const after = await request(port, '/api/data-status');
+      assert.equal(JSON.parse(after.body).samples, beforeSamples, '拒否された削除で記録は変わらない');
+    });
+  });
 });
 
 describe('LANからのアクセス制御', () => {

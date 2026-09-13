@@ -1,6 +1,6 @@
 {
   "name": "pc-local-dashboard",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "private": true,
   "description": "Local Windows dashboard for PC power, storage usage, and system status",
   "license": "MIT",

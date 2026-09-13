@@ -138,6 +138,18 @@ for (const endpoint of declared) {
 
 // ---------------------------------------------------------------- debug leftovers
 
+// Windows用スクリプト（.cmd/.bat/.ps1/.vbs）はCRLFで統一する。
+// LFが混ざると cmd.exe での動作や差分が不安定になるため、機械的に確認する。
+for (const file of walk(root, (name) => /\.(cmd|bat|ps1|vbs)$/i.test(name))) {
+  if (file.includes(`${path.sep}dist${path.sep}`)) continue;
+  const buffer = fs.readFileSync(file);
+  const text = buffer.toString('latin1');
+  const crlf = (text.match(/\r\n/g) || []).length;
+  const bareLf = (text.match(/(?<!\r)\n/g) || []).length;
+  if (bareLf > 0) fail(`改行コードがCRLFではありません: ${path.relative(root, file)}（LFのみの行が${bareLf}行）`);
+  if (crlf === 0 && buffer.length > 0) fail(`改行コードがCRLFではありません: ${path.relative(root, file)}`);
+}
+
 for (const file of jsFiles) {
   if (file.includes(`${path.sep}tests${path.sep}`)) continue;
   const text = fs.readFileSync(file, 'utf8');

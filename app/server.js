@@ -37,8 +37,9 @@ const STORAGE_RESULT_PATH = path.join(APP_DIR, 'storage-map', 'data', 'last-scan
 const WATTSEAL_PATH = path.join(APP_DIR, 'WattSeal.exe');
 const PORT = Number(process.env.PC_POWER_PORT || 17891);
 const STORAGE_PORT = Number(process.env.PC_STORAGE_PORT || 17892);
-const APP_VERSION = '0.12.0';
-const IDLE_EXIT_MS = 10 * 60 * 1000;
+const APP_VERSION = '0.12.1';
+// 既定は「ブラウザーを閉じて約10分」。PC_POWER_IDLE_MSは動作確認用の上書き（通常は使わない）。
+const IDLE_EXIT_MS = Number(process.env.PC_POWER_IDLE_MS || 10 * 60 * 1000);
 
 const configStore = createConfigStore(CONFIG_PATH);
 const logger = createLogger({ dir: LOG_DIR, paths: [APP_DIR, DB_PATH, CONFIG_PATH] });
@@ -1171,7 +1172,7 @@ const idleTimer = setInterval(() => {
     logger.info('一定時間アクセスがなかったため表示サーバーを終了します。');
     server.close(() => process.exit(0));
   }
-}, 30 * 1000);
+}, Math.min(30 * 1000, Math.max(1000, IDLE_EXIT_MS / 3)));
 idleTimer.unref();
 
 module.exports = { APP_VERSION, server };

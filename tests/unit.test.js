@@ -6,14 +6,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { DatabaseSync } = require('node:sqlite');
 const { describe, it } = require('node:test');
 
 const security = require('../app/lib/security');
 const time = require('../app/lib/time');
 const configLib = require('../app/lib/config');
 const aggregate = require('../app/lib/aggregate');
+const sessionsLib = require('../app/lib/sessions');
 const { createDatabase } = require('../app/lib/db');
-const { buildCsv, deleteRange } = require('../app/lib/export');
+const { buildCsv, createDatabaseBackup, deleteRange } = require('../app/lib/export');
 const { createFixture } = require('./fixtures');
 
 describe('接続元の判定', () => {
@@ -318,5 +320,168 @@ describe('DB集計とエクスポート', () => {
     const after = database.bounds();
     assert.equal(after.samples, before.samples - result.deletedSamples);
     assert.ok(after.samples > 0);
+  });
+
+  it('削除しても別の期間の記録は壊れない（整合性チェック）', () => {
+    const fixture = createFixture(path.join(dir, 'integrity'), 'gaps');
+    const dayStart = time.localStartOfDay(new Date(Date.now() - 86400000));
+    const result = deleteRange(fixture.dbPath, dayStart + 10 * 3600000, dayStart + 10 * 3600000 + 60000);
+    assert.ok(result.deletedSamples >= 0);
+    const db = new DatabaseSync(fixture.dbPath, { readOnly: true });
+    try {
+      const check = db.prepare('PRAGMA integrity_check').get();
+      assert.equal(Object.values(check)[0], 'ok');
+      const orphans = db.prepare('SELECT COUNT(*) AS count FROM total_data WHERE timestamp_id NOT IN (SELECT id FROM timestamp)').get();
+      assert.equal(Number(orphans.count), 0, '削除後に孤児行が残らない');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('バックアップを取り、削除後に復元できる（テスト用DBのみ）', () => {
+    const fixture = createFixture(path.join(dir, 'restore'), 'gaps');
+    const backupPath = path.join(dir, 'backup.db');
+    const backup = createDatabaseBackup(fixture.dbPath, backupPath);
+    assert.ok(backup.bytes > 0);
+
+    const original = createDatabase({ path: fixture.dbPath }).bounds();
+    const dayStart = time.localStartOfDay(new Date(Date.now() - 86400000));
+    const deleted = deleteRange(fixture.dbPath, dayStart, dayStart + 12 * 3600000);
+    assert.ok(deleted.deletedSamples > 0, '削除が実行される');
+    const afterDelete = createDatabase({ path: fixture.dbPath }).bounds();
+    assert.equal(afterDelete.samples, original.samples - deleted.deletedSamples);
+
+    // 復元（バックアップを戻す）
+    fs.copyFileSync(backupPath, fixture.dbPath);
+    const restored = createDatabase({ path: fixture.dbPath }).bounds();
+    assert.equal(restored.samples, original.samples, 'バックアップから元に戻せる');
+    const db = new DatabaseSync(fixture.dbPath, { readOnly: true });
+    try {
+      const check = db.prepare('PRAGMA integrity_check').get();
+      assert.equal(Object.values(check)[0], 'ok', '復元後のDBも整合している');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('書き込み中のDBでは削除を失敗させ、記録を壊さない', () => {
+    const fixture = createFixture(path.join(dir, 'locked'), 'gaps');
+    const before = createDatabase({ path: fixture.dbPath }).bounds();
+    const writer = new DatabaseSync(fixture.dbPath);
+    writer.exec('BEGIN IMMEDIATE');
+    try {
+      writer.prepare('UPDATE timestamp SET period_type = period_type WHERE id = (SELECT MIN(id) FROM timestamp)').run();
+      assert.throws(() => deleteRange(fixture.dbPath, 0, Date.now()), /locked|busy/i, '排他中の削除は失敗する');
+    } finally {
+      writer.exec('ROLLBACK');
+      writer.close();
+    }
+    const after = createDatabase({ path: fixture.dbPath }).bounds();
+    assert.equal(after.samples, before.samples, '失敗した削除は記録を変えない');
+  });
+});
+
+// 1秒記録と1時間平均が同じ時間帯に併存した場合の採用規則（秒データ優先）と、
+// 時間加重平均・期間境界・固定W加算の検証。
+describe('重複区間の採用規則', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pc-dashboard-overlap-'));
+  const config = configLib.normalizeConfig({ electricityRate: 30, sensorFactor: 1, wallCalibration: 1, baseWatts: 0, monitorWatts: 0 });
+  const fixture = createFixture(path.join(dir, 'overlap'), 'overlap');
+  const database = createDatabase({ path: fixture.dbPath });
+  // フィクスチャは「昨日の0時」を起点に作っている
+  const dayStart = time.localStartOfDay(new Date(Date.now() - 86400000));
+  const bounds = { start: dayStart + 3600000, end: dayStart + 5 * 3600000 };
+
+  function hourly() {
+    return database.withDatabase((db) => aggregate.periodTotals(db, bounds, 'hour', 3600, config));
+  }
+
+  it('完全重複（1時間まるごと）でも二重計上しない', () => {
+    const { buckets } = hourly();
+    const hour1 = buckets[0];
+    // 100Wを1時間 = 0.1kWh（秒データ3600件）。1時間平均の行は採用しない
+    assert.ok(Math.abs(hour1.kwh - 0.1) < 1e-9, `0.1kWhであること: ${hour1.kwh}`);
+    assert.equal(hour1.activeSeconds, 3600);
+    assert.equal(hour1.samples, 3600);
+    assert.equal(hour1.rollup, false, '1時間平均の行は採用しない');
+    assert.equal(hour1.maxWatts, 100);
+  });
+
+  it('部分重複（30分だけ秒データ）でも二重計上しない', () => {
+    const { buckets } = hourly();
+    const hour2 = buckets[1];
+    // 60W×1800秒 = 0.03kWh。1時間平均（50W×3600秒）は足さない
+    assert.ok(Math.abs(hour2.kwh - 0.03) < 1e-9, `0.03kWhであること: ${hour2.kwh}`);
+    assert.equal(hour2.activeSeconds, 1800);
+    assert.ok(Math.abs(hour2.averageWatts - 60) < 1e-6);
+    // 記録のない30分は0として加算しない（欠損として扱う）
+    assert.ok(Math.abs(hour2.coveragePercent - 50) < 0.1);
+    assert.equal(hour2.quality, 'partial');
+  });
+
+  it('重複していた時間帯の数を返す', () => {
+    const { totals } = hourly();
+    assert.equal(totals.deduplicatedHours, 2);
+    // 01時0.1 + 02時0.03 + 03時(平均のみ)0.04 + 04時0.06 = 0.23kWh
+    assert.ok(Math.abs(totals.kwh - 0.23) < 1e-9, `合計0.23kWh: ${totals.kwh}`);
+    assert.equal(totals.activeSeconds, 3600 + 1800 + 3600 + 2700);
+  });
+
+  it('1時間平均しかない時間帯からは瞬間最大・セッションを作らない', () => {
+    const { buckets } = hourly();
+    const hour3 = buckets[2];
+    assert.equal(hour3.rollup, true);
+    assert.equal(hour3.maxWatts, null, '1時間平均から瞬間最大を作らない');
+    assert.equal(hour3.minWatts, null);
+    assert.ok(Math.abs(hour3.kwh - 0.04) < 1e-9, '電力量は40W×1時間として扱う');
+  });
+
+  it('1時間平均しかないDBではセッションを作らない', () => {
+    const rollupFixture = createFixture(path.join(dir, 'rolluponly'), 'rolluponly');
+    const rollupDb = createDatabase({ path: rollupFixture.dbPath });
+    const result = rollupDb.withDatabase((db) => ({
+      totals: aggregate.periodTotals(db, { start: dayStart, end: dayStart + 5 * 3600000 }, 'hour', 3600, config),
+      sessions: sessionsLib.recentSessions(db, config, { since: dayStart }),
+    }));
+    assert.equal(result.sessions.sessions.length, 0, '1時間平均の区間はセッションにしない');
+    const buckets = result.totals.buckets.filter((bucket) => !bucket.missing);
+    assert.ok(buckets.length >= 3);
+    assert.ok(buckets.every((bucket) => bucket.maxWatts === null && bucket.minWatts === null), '瞬間最大は分からない');
+    assert.ok(buckets.every((bucket) => bucket.rollup && bucket.kwh > 0), '電力量は1時間平均から計算する');
+    assert.equal(result.totals.totals.activeSecondsEstimated, true);
+  });
+
+  it('時間加重平均を記録時間で割って求める', () => {
+    const { buckets } = hourly();
+    const hour4 = buckets[3];
+    // 60W×1800秒 + 120W×900秒 = 0.06kWh / 2700秒 → 平均80W
+    assert.ok(Math.abs(hour4.kwh - 0.06) < 1e-9, `${hour4.kwh}`);
+    assert.equal(hour4.activeSeconds, 2700);
+    assert.ok(Math.abs(hour4.averageWatts - 80) < 1e-6, `時間加重平均80W: ${hour4.averageWatts}`);
+    assert.equal(hour4.quality, 'partial');
+  });
+
+  it('期間境界は30分単位でも切り取って集計する', () => {
+    const half = database.withDatabase((db) => aggregate.periodTotals(db, { start: dayStart + 4.5 * 3600000, end: dayStart + 5 * 3600000 }, 'hour', 3600, config));
+    const bucket = half.buckets[0];
+    assert.equal(bucket.expectedSeconds, 1800, '期間外は数えない');
+    // 04:30〜04:45は120W（900件）、04:45〜05:00は記録なし → 0.03kWh
+    assert.ok(Math.abs(bucket.kwh - 0.03) < 1e-9, `30分ぶんだけを集計する: ${bucket.kwh}`);
+    assert.equal(bucket.activeSeconds, 900);
+    assert.ok(Math.abs(bucket.averageWatts - 120) < 1e-6);
+    assert.equal(bucket.quality, 'partial');
+  });
+
+  it('固定Wは記録がある時間にだけ加算し、欠損時間には加算しない', () => {
+    const withFixed = configLib.normalizeConfig({ electricityRate: 30, sensorFactor: 1, wallCalibration: 1, baseWatts: 25, monitorWatts: 0 });
+    const { buckets } = database.withDatabase((db) => aggregate.periodTotals(db, bounds, 'hour', 3600, withFixed));
+    const hour2 = buckets[1];
+    // 60W×1800秒 + 固定25W×1800秒 = 0.03 + 0.0125 kWh
+    assert.ok(Math.abs(hour2.kwh - 0.0425) < 1e-9, `固定Wは記録時間にだけ加算: ${hour2.kwh}`);
+    const missing = buckets.find((bucket) => bucket.timestamp >= dayStart + 5 * 3600000);
+    if (missing) {
+      assert.equal(missing.kwh, null, '記録がない時間に固定Wを足さない');
+      assert.equal(missing.cost, null);
+    }
   });
 });

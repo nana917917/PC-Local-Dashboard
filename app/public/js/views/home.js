@@ -53,7 +53,9 @@ export function createHomeView(state, helpers) {
       ? `${integer((totals.kwh ?? 0) * 1000)}<small>Wh</small>`
       : `${(totals.kwh ?? 0).toFixed(3)}<small>kWh</small>`;
     byId('periodEnergyDetail').textContent = `平均 ${watts(totals.averageWatts)} W`;
-    byId('periodPeak').textContent = `最大 ${watts(totals.maxWatts)} W`;
+    byId('periodPeak').textContent = totals.maxWatts == null
+      ? '最大 -- W（1時間平均のみの区間は出しません）'
+      : `最大 ${watts(totals.maxWatts)} W${totals.maxWattsPartial ? '（1秒記録のある区間）' : ''}`;
     byId('activeTime').textContent = duration(totals.activeSeconds);
     byId('activeTimeDetail').textContent = totals.activeSecondsEstimated
       ? '1時間平均の記録を含むため概算です'

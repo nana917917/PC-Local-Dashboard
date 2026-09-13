@@ -282,7 +282,7 @@ $dashboardShortcut.Save()
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PCLocalDashboard'
 New-Item -Path $uninstallKey -Force | Out-Null
 Set-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'PC Local Dashboard'
-Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.12.0'
+Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.12.1'
 Set-ItemProperty -Path $uninstallKey -Name Publisher -Value 'PC Local Dashboard contributors'
 Set-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installDir
 Set-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value "$env:SystemRoot\System32\powercpl.dll"

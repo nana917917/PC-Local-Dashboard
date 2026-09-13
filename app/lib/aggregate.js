@@ -58,6 +58,45 @@ function groupExpression(granularity, bucketSeconds) {
   return `CAST(t.timestamp / ${sizeMs} AS INTEGER)`;
 }
 
+// 同じ1時間に「1秒記録」と「1時間平均（ロールアップ）」が併存する場合の採用規則。
+//   → その時間は 1秒記録だけを採用し、1時間平均の行は使わない（二重計上を避ける）
+// WattSealは通常ロールアップ後に1秒行を消すため併存しないが、DBの状態によっては
+// 併存し得るので、集計側で必ず排除する。
+// 判定は total_data.period_type（旧形式では1サンプルの秒数）で行い、
+// 時間帯のキーは timestamp から求める。
+function hourlyRollupFlag(db, dataAlias) {
+  return aggregatedExpression(db, dataAlias, 't');
+}
+
+function dedupCondition(db, options = {}) {
+  const dataAlias = options.dataAlias || 'd';
+  const flag = hourlyRollupFlag(db, dataAlias);
+  return `AND NOT ((${flag}) = 1 AND CAST(t.timestamp / 3600000 AS INTEGER) IN (
+      SELECT CAST(t2.timestamp / 3600000 AS INTEGER)
+        FROM timestamp t2 JOIN total_data d2 ON d2.timestamp_id = t2.id
+       WHERE t2.timestamp >= ? AND t2.timestamp <= ?
+         AND NOT (${aggregatedExpression(db, 'd2', 't2')})
+    ))`;
+}
+
+// 実際に重複していた時間帯の数（画面の注記用）
+function overlappingHours(db, bounds) {
+  try {
+    const row = db.prepare(`
+      SELECT COUNT(*) AS count FROM (
+        SELECT CAST(t.timestamp / 3600000 AS INTEGER) AS hour_key
+          FROM timestamp t JOIN total_data d ON d.timestamp_id = t.id
+         WHERE t.timestamp >= ? AND t.timestamp <= ?
+         GROUP BY hour_key
+        HAVING SUM(CASE WHEN (${aggregatedExpression(db, 'd', 't')}) = 1 THEN 1 ELSE 0 END) > 0
+           AND SUM(CASE WHEN (${aggregatedExpression(db, 'd', 't')}) = 0 THEN 1 ELSE 0 END) > 0
+      )`).get(bounds.start, bounds.end);
+    return Number(row?.count || 0);
+  } catch (_) {
+    return 0;
+  }
+}
+
 function bucketStartFromGroupKey(key, granularity, bucketSeconds) {
   if (granularity === 'month') {
     const [year, month] = String(key).split('-').map(Number);
@@ -92,9 +131,10 @@ function readGroupedRows(db, bounds, granularity, bucketSeconds) {
       FROM timestamp t
       JOIN total_data d ON d.timestamp_id = t.id
      WHERE t.timestamp >= ? AND t.timestamp <= ?
+       ${dedupCondition(db)}
      GROUP BY group_key
      ORDER BY group_key`;
-  return db.prepare(sql).all(bounds.start, bounds.end);
+  return db.prepare(sql).all(bounds.start, bounds.end, bounds.start, bounds.end);
 }
 
 // 期間内のバケットを欠損込みで生成する（欠損は 0 ではなく missing として扱う）。
@@ -126,8 +166,10 @@ function buildBuckets(db, bounds, granularity, bucketSeconds, config, options = 
     const rollupRows = Number(row.rollup_rows || 0);
     const coveragePercent = expectedSeconds > 0 ? Math.min(100, activeSeconds / expectedSeconds * 100) : 0;
     const totals = applyAdjustments(Number(row.energy_uj || 0) / UJ_PER_KWH, activeSeconds, config);
-    const maxWatts = row.max_watts == null ? null : adjustedWatts(Number(row.max_watts), config);
-    const minWatts = row.min_watts == null ? null : adjustedWatts(Number(row.min_watts), config);
+    // 1時間平均しかない区間は、瞬間の最大・最小が分からないため null（創作しない）
+    const aggregatedOnly = rollupRows > 0 && rollupRows === samples;
+    const maxWatts = (row.max_watts == null || aggregatedOnly) ? null : adjustedWatts(Number(row.max_watts), config);
+    const minWatts = (row.min_watts == null || aggregatedOnly) ? null : adjustedWatts(Number(row.min_watts), config);
     const readable = samples - nullSamples;
     let quality = 'complete';
     if (readable <= 0) quality = 'missing';
@@ -216,6 +258,7 @@ function summarizeBuckets(buckets, bounds, granularity) {
   let rollupBuckets = 0;
   let maxWatts = null;
   let minWatts = null;
+  let bucketsWithoutMax = 0;
   let peakCostBucket = null;
   let peakWattsBucket = null;
   for (const bucket of buckets) {
@@ -231,6 +274,7 @@ function summarizeBuckets(buckets, bounds, granularity) {
     if (bucket.rollup) rollupBuckets += 1;
     if (bucket.maxWatts != null && (maxWatts === null || bucket.maxWatts > maxWatts)) maxWatts = bucket.maxWatts;
     if (bucket.minWatts != null && (minWatts === null || bucket.minWatts < minWatts)) minWatts = bucket.minWatts;
+    if (bucket.maxWatts == null) bucketsWithoutMax += 1;
     if (!peakCostBucket || Number(bucket.cost) > Number(peakCostBucket.cost)) peakCostBucket = bucket;
     if (bucket.maxWatts != null && (!peakWattsBucket || bucket.maxWatts > peakWattsBucket.maxWatts)) peakWattsBucket = bucket;
   }
@@ -251,6 +295,9 @@ function summarizeBuckets(buckets, bounds, granularity) {
     averageWatts: activeSeconds > 0 ? kwh * 3_600_000 / activeSeconds : 0,
     maxWatts,
     minWatts,
+    // 1時間平均しかない区間が混ざる場合、最大Wは「1秒記録がある区間だけ」の値になる
+    maxWattsPartial: bucketsWithoutMax > 0 && maxWatts != null,
+    bucketsWithoutMax,
     samples,
     readableSamples,
     zeroSamples,
@@ -277,7 +324,10 @@ function periodTotals(db, bounds, granularity, bucketSeconds, config) {
     };
   }
   const { buckets, truncated } = buildBuckets(db, bounds, granularity, bucketSeconds, config);
-  return { totals: summarizeBuckets(buckets, bounds, granularity), buckets, truncated };
+  const totals = summarizeBuckets(buckets, bounds, granularity);
+  // 同じ時間帯に秒データと1時間平均が併存していた場合は、秒データを採用したことを伝える
+  totals.deduplicatedHours = overlappingHours(db, bounds);
+  return { totals, buckets, truncated };
 }
 
 // 期間の比較。データ不足・長さの違い・0除算を明示的に扱い、誤った増減率を出さない。
@@ -436,11 +486,13 @@ function applicationUsage(db, bounds, config, options = {}) {
            COUNT(*) AS samples
       FROM timestamp t
       JOIN process_data p ON p.timestamp_id = t.id
+      LEFT JOIN total_data td ON td.timestamp_id = t.id
      WHERE t.timestamp >= ? AND t.timestamp <= ?
        ${processSampleFilter('p', window.step)}
+       ${dedupCondition(db, { dataAlias: 'td' })}
      GROUP BY p.app_name
      ORDER BY watt_seconds DESC
-     LIMIT 200`).all(window.bounds.start, window.bounds.end);
+     LIMIT 200`).all(window.bounds.start, window.bounds.end, window.bounds.start, window.bounds.end);
   const totalWattSeconds = rows.reduce((sum, row) => sum + Number(row.watt_seconds || 0), 0);
   const apps = rows.map((row) => {
     const share = totalWattSeconds > 0 ? Number(row.watt_seconds || 0) / totalWattSeconds : 0;
@@ -497,7 +549,9 @@ function componentBreakdown(db, bounds, config, periodTotalsValue) {
       SELECT COALESCE(SUM(${watts} * ${seconds}), 0) AS watt_seconds,
              COUNT(*) AS samples
         FROM timestamp t JOIN ${table} d ON d.timestamp_id = t.id
-       WHERE t.timestamp >= ? AND t.timestamp <= ?`).get(bounds.start, bounds.end);
+        LEFT JOIN total_data td ON td.timestamp_id = t.id
+       WHERE t.timestamp >= ? AND t.timestamp <= ?
+         ${dedupCondition(db, { dataAlias: 'td' })}`).get(bounds.start, bounds.end, bounds.start, bounds.end);
     const wattSeconds = Number(row?.watt_seconds || 0);
     measuredSeconds = Math.max(measuredSeconds, Number(periodTotalsValue.activeSeconds || 0));
     components.push({
@@ -592,8 +646,9 @@ function dailyHeatmap(db, bounds, config) {
            COUNT(*) AS samples
       FROM (SELECT t.timestamp AS stamp, (${watts}) AS value
               FROM timestamp t JOIN total_data d ON d.timestamp_id = t.id
-             WHERE t.timestamp >= ? AND t.timestamp <= ?) d
-     GROUP BY weekday, hour`).all(bounds.start, bounds.end);
+             WHERE t.timestamp >= ? AND t.timestamp <= ?
+               ${dedupCondition(db)}) d
+     GROUP BY weekday, hour`).all(bounds.start, bounds.end, bounds.start, bounds.end);
   const scale = Number(config.sensorFactor || 1) * Number(config.wallCalibration || 1);
   const fixed = Number(config.baseWatts || 0) + Number(config.monitorWatts || 0);
   const cells = rows.map((row) => ({
@@ -617,7 +672,8 @@ function hourlyProfile(db, bounds, config) {
            COUNT(*) AS samples
       FROM timestamp t JOIN total_data d ON d.timestamp_id = t.id
      WHERE t.timestamp >= ? AND t.timestamp <= ?
-     GROUP BY hour ORDER BY hour`).all(bounds.start, bounds.end);
+       ${dedupCondition(db)}
+     GROUP BY hour ORDER BY hour`).all(bounds.start, bounds.end, bounds.start, bounds.end);
   const scale = Number(config.sensorFactor || 1) * Number(config.wallCalibration || 1);
   const fixed = Number(config.baseWatts || 0) + Number(config.monitorWatts || 0);
   const byHour = new Map(rows.map((row) => [Number(row.hour), row]));

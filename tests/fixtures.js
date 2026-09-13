@@ -253,6 +253,40 @@ function createFixture(dir, scenario, options = {}) {
         ],
       });
       break;
+    case 'overlap': {
+      // 秒データと1時間ロールアップが同じ時間帯に併存する人工DB。
+      //  01時: 完全重複（秒100W×3600 + 時間平均100W）
+      //  02時: 部分重複（秒60W×1800 + 時間平均50W）
+      //  03時: ロールアップのみ（瞬間最大は復元できない）
+      //  04時: 同一起動内で負荷が変化（時間加重平均の確認用）
+      // 実行時刻に関係なく過去の時間帯を使う（未来の時刻は「まだ記録がない」扱いになるため）
+      const base = day0 - 24 * 3600000;
+      const at = (hours) => base + hours * 3600000;
+      for (let index = 0; index < 3600; index += 1) {
+        insertSample(db, { ts: at(1) + index * 1000, watts: 100, periodSeconds: 1, apps: [{ name: 'game.exe', watts: 40 }] });
+      }
+      insertSample(db, { ts: at(1), watts: 100, periodSeconds: 3600, rollup: true, apps: [{ name: 'game.exe', watts: 40 }] });
+      for (let index = 0; index < 1800; index += 1) {
+        insertSample(db, { ts: at(2) + index * 1000, watts: 60, periodSeconds: 1 });
+      }
+      insertSample(db, { ts: at(2), watts: 50, periodSeconds: 3600, rollup: true });
+      insertSample(db, { ts: at(3), watts: 40, periodSeconds: 3600, rollup: true });
+      for (let index = 0; index < 1800; index += 1) {
+        insertSample(db, { ts: at(4) + index * 1000, watts: 60, periodSeconds: 1 });
+      }
+      for (let index = 0; index < 900; index += 1) {
+        insertSample(db, { ts: at(4) + 1800000 + index * 1000, watts: 120, periodSeconds: 1 });
+      }
+      break;
+    }
+    case 'rolluponly': {
+      // 1時間平均しかないDB（瞬間最大・セッションを作れないことの確認用）
+      const base = day0 - 24 * 3600000;
+      for (let hour = 1; hour <= 3; hour += 1) {
+        insertSample(db, { ts: base + hour * 3600000, watts: 50 + hour * 10, periodSeconds: 3600, rollup: true });
+      }
+      break;
+    }
     case 'boundary': {
       // 月末・月初・年末・年始をまたぐサンプル
       const monthStart = new Date(Number(now));

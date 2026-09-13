@@ -100,7 +100,9 @@ export function createHistoryView(state) {
     byId('kpiCost').textContent = `約${money(totals.cost)}円`;
     byId('kpiKwh').textContent = energy(totals.kwh, unit);
     byId('kpiWatts').textContent = `${watts(totals.averageWatts)} W`;
-    byId('kpiWattsDetail').textContent = `最大 ${watts(totals.maxWatts)} W・最小 ${watts(totals.minWatts)} W`;
+    byId('kpiWattsDetail').textContent = totals.maxWattsPartial
+      ? `最大 ${watts(totals.maxWatts)} W・最小 ${watts(totals.minWatts)} W（1秒記録のある区間のみ。1時間平均しかない区間は最大・最小を出しません）`
+      : `最大 ${watts(totals.maxWatts)} W・最小 ${watts(totals.minWatts)} W`;
     byId('kpiActive').textContent = duration(totals.activeSeconds);
     byId('kpiActiveDetail').textContent = totals.activeSecondsEstimated ? '1時間平均を含む概算' : '記録があった時間の合計';
     byId('kpiSamples').textContent = integer(quality.samples);
