@@ -70,6 +70,8 @@ function listFiles(dir, base = dir) {
 
 function main() {
   fs.mkdirSync(distDir, { recursive: true });
+  // 前回のビルド結果が残っていると古いファイルが混入するため、作り直す
+  if (fs.existsSync(stageDir)) fs.rmSync(stageDir, { recursive: true, force: true });
   fs.mkdirSync(stageDir, { recursive: true });
   console.log(`配布物を作成します: ${releaseName}`);
   for (const item of ITEMS) {
