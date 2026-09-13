@@ -3,166 +3,514 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="PCの電力・電気代・容量・状態を、このPCの中だけで確認するローカルダッシュボード">
   <title>PC Local Dashboard</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/manifest.webmanifest">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
-      <div>
+      <div class="topbar-title">
         <p class="eyebrow">PC LOCAL DASHBOARD</p>
-        <h1>PC Local Dashboard</h1>
+        <h1>PC電力ダッシュボード</h1>
         <p id="statusText" class="status">ローカルデータを読み込んでいます</p>
       </div>
       <div class="top-actions">
-        <button id="exportButton" class="button secondary">CSV出力</button>
-        <button id="settingsButton" class="button">設定・データ</button>
+        <button id="helpButton" class="button ghost" type="button">見かた</button>
+        <button id="settingsButton" class="button" type="button">設定・データ</button>
       </div>
     </header>
 
-    <nav id="mainTabs" class="main-tabs" aria-label="機能">
-      <button data-view="power" class="active"><span>⚡</span>電力</button>
-      <button data-view="storage"><span>▦</span>容量</button>
-      <button data-view="system"><span>◉</span>PC状態</button>
+    <section id="stateBanner" class="state-banner" aria-live="polite">
+      <span id="stateChip" class="chip">確認中</span>
+      <span id="sampleChip" class="chip muted">最終取得: --</span>
+      <span id="qualityChip" class="chip muted">データ品質: --</span>
+      <span id="compareChip" class="chip muted">比較: --</span>
+      <span id="lanChip" class="chip muted hidden">LAN公開中（読み取り専用）</span>
+      <span id="estimateChip" class="chip muted">推定値</span>
+    </section>
+
+    <div id="warningList" class="warning-list" hidden></div>
+
+    <nav id="rangeTabs" class="range-tabs" aria-label="表示期間">
+      <button data-range="today" class="active">今日</button>
+      <button data-range="yesterday">昨日</button>
+      <button data-range="7d">7日</button>
+      <button data-range="30d">30日</button>
+      <button data-range="month">今月</button>
+      <button data-range="lastMonth">先月</button>
+      <button data-range="thisYear">今年</button>
+      <button data-range="year">1年</button>
+      <button data-range="all">全期間</button>
+      <button data-range="custom">カスタム</button>
+    </nav>
+    <div id="customRange" class="custom-range hidden">
+      <label>から <input id="customFrom" type="date"></label>
+      <label>まで <input id="customTo" type="date"></label>
+      <button id="applyCustomRange" class="button secondary" type="button">この期間を表示</button>
+      <small id="customRangeNote" class="muted"></small>
+    </div>
+
+    <nav id="mainTabs" class="main-tabs" aria-label="画面">
+      <button data-view="home" class="active">概要</button>
+      <button data-view="history">履歴・料金</button>
+      <button data-view="sessions">セッション</button>
+      <button data-view="system">PC状態</button>
+      <button data-view="storage">容量</button>
     </nav>
 
-    <section id="powerView" class="view active">
-      <nav id="rangeTabs" class="range-tabs" aria-label="表示期間">
-        <button data-range="session">今回</button><button data-range="today" class="active">今日</button>
-        <button data-range="7d">7日</button><button data-range="month">今月</button>
-        <button data-range="30d">30日</button><button data-range="90d">90日</button>
-        <button data-range="year">1年</button><button data-range="all">全期間</button>
-      </nav>
-
-      <div class="overview-heading">
-        <div><p class="eyebrow">まず見る</p><h2>このPCの電力のようす</h2><p class="muted">現在値は記録中のときだけ表示します。期間を変えると料金の集計も切り替わります。</p></div>
-        <span id="overviewStatus" class="state-chip">確認中</span>
+    <!-- ============================ 概要 ============================ -->
+    <section id="homeView" class="view active">
+      <div class="view-intro">
+        <div>
+          <p class="eyebrow">まず見る</p>
+          <h2 id="homeHeading">このPCの電力のようす</h2>
+          <p id="homeSubheading" class="muted">現在の状態と、選択した期間の料金を表示します。</p>
+        </div>
+        <span id="homeRangeLabel" class="chip muted">今日</span>
       </div>
 
       <section class="hero-grid">
-        <article class="metric live"><span>現在の推定電力</span><strong id="currentWatts">--<small>W</small></strong><em id="currentAge">計測待ち</em></article>
-        <article class="metric accent"><span id="periodLabel">今日の推定料金</span><strong id="periodCost">--<small>円</small></strong><em id="periodRate">31円/kWh</em></article>
-        <article class="metric"><span>推定電力量</span><strong id="periodEnergy">--<small>kWh</small></strong><em id="averageWatts">平均 -- W</em></article>
-        <article class="metric"><span>記録された使用時間</span><strong id="activeTime">--</strong><em>停止・スリープ中を除く</em></article>
+        <article class="metric live">
+          <span>現在の推定電力</span>
+          <strong id="currentWatts">--<small>W</small></strong>
+          <em id="currentDetail">計測待ち</em>
+          <em id="currentHourlyCost" class="subtle">1時間続けた場合: --</em>
+        </article>
+        <article class="metric accent">
+          <span id="periodCostLabel">今日の推定料金</span>
+          <strong id="periodCost">--<small>円</small></strong>
+          <em id="periodCostDetail">単価 --円/kWh</em>
+          <em id="comparisonInline" class="subtle">比較: --</em>
+        </article>
+        <article class="metric">
+          <span>推定電力量</span>
+          <strong id="periodEnergy">--<small>kWh</small></strong>
+          <em id="periodEnergyDetail">平均 -- W</em>
+          <em id="periodPeak" class="subtle">最大 -- W</em>
+        </article>
+        <article class="metric">
+          <span>記録された使用時間</span>
+          <strong id="activeTime">--</strong>
+          <em id="activeTimeDetail">記録のない時間は含みません</em>
+          <em id="coverageDetail" class="subtle">記録率 --</em>
+        </article>
       </section>
 
-      <section class="panel overview-panel">
-        <div class="panel-heading"><div><p class="eyebrow">いま分かること</p><h2>電力の主な要因</h2></div><span class="muted">直近の記録から</span></div>
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">いま分かること</p><h2>短いまとめ</h2></div>
+          <span class="muted">詳細は「履歴・料金」タブへ</span>
+        </div>
         <div class="insight-grid">
-          <article><span>今いちばん使う部品</span><strong id="liveComponent">--</strong><small id="liveComponentDetail">取得中</small></article>
-          <article><span>今いちばん使うアプリ</span><strong id="liveApplication">--</strong><small id="liveApplicationDetail">推定配分</small></article>
-          <article><span>直近のピーク</span><strong id="recentPeak">-- W</strong><small id="recentPeakTime">取得中</small></article>
-          <article><span>今月の着地予測</span><strong id="quickMonthCost">--円</strong><small id="quickMonthDetail">現在のペース</small></article>
+          <article><span>いまの状態</span><strong id="stateLabel">--</strong><small id="stateDetail">判定中</small></article>
+          <article><span>前日・同期間との比較</span><strong id="comparisonValue">--</strong><small id="comparisonDetail">比較データ待ち</small></article>
+          <article><span>今月の着地予測</span><strong id="monthProjection">--</strong><small id="monthProjectionDetail">現在のペース</small></article>
+          <article><span>もっとも電力を使った時間</span><strong id="peakBucket">--</strong><small id="peakBucketDetail">集計中</small></article>
         </div>
       </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">POWER TREND</p><h2>直近の電力</h2></div>
+          <div class="segmented" id="liveMinutes">
+            <button data-minutes="5">5分</button><button data-minutes="15" class="active">15分</button><button data-minutes="60">60分</button>
+          </div>
+        </div>
+        <div class="chart-wrap interactive-chart">
+          <canvas id="liveChart" height="240" role="img" aria-label="直近の電力（W）の推移"></canvas>
+          <div id="liveCrosshair" class="chart-crosshair hidden"></div>
+          <div id="liveTooltip" class="chart-tooltip hidden"></div>
+          <p id="liveChartEmpty" class="empty hidden">直近の記録はありません。</p>
+        </div>
+        <p id="liveChartNote" class="chart-note">線が途切れている時間は、PC停止・スリープ・計測停止の可能性があります。</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">主な要因</p><h2>いま電力を多く使っているもの</h2></div>
+          <span class="muted">推定</span>
+        </div>
+        <div class="insight-grid">
+          <article><span>部品（推定）</span><strong id="liveComponent">--</strong><small id="liveComponentDetail">記録待ち</small></article>
+          <article><span>アプリ（推定配分）</span><strong id="liveApplication">--</strong><small id="liveApplicationDetail">記録待ち</small></article>
+          <article><span>直近のピーク</span><strong id="livePeak">-- W</strong><small id="livePeakDetail">記録待ち</small></article>
+          <article><span>この期間の最大用途</span><strong id="topCategory">--</strong><small id="topCategoryDetail">分類中</small></article>
+        </div>
+        <p class="chart-note">アプリ別の値は、PC全体の電力とアプリの使用状況から求めた推定配分です。アプリ単体を測った値ではありません。</p>
+      </section>
+    </section>
+
+    <!-- ============================ 履歴・料金 ============================ -->
+    <section id="historyView" class="view">
+      <div class="view-intro">
+        <div>
+          <p class="eyebrow">HISTORY</p>
+          <h2>履歴と料金の分析</h2>
+          <p class="muted">期間を変えると、グラフの粒度・比較対象・表がすべて連動します。</p>
+        </div>
+        <div class="export-actions">
+          <button id="exportCsv" class="button secondary" type="button">CSV</button>
+          <button id="exportJson" class="button secondary" type="button">JSON</button>
+        </div>
+      </div>
 
       <section class="panel chart-panel">
         <div class="panel-heading">
-          <div><p class="eyebrow">POWER TREND</p><h2 id="powerChartTitle">リアルタイム電力</h2></div>
-          <div class="segmented" id="powerChartModes">
-            <button data-mode="live" class="active">リアルタイムW</button>
-            <button data-mode="cost">時間別料金</button>
-            <button data-mode="cumulative">累積料金</button>
+          <div><p class="eyebrow">POWER TREND</p><h2 id="historyChartTitle">--</h2></div>
+          <div class="segmented" id="historyMetrics">
+            <button data-metric="watts" class="active">電力(W)</button>
+            <button data-metric="kwh">電力量</button>
+            <button data-metric="cost">料金</button>
+            <button data-metric="cumulative">累積</button>
           </div>
         </div>
-        <div id="liveControls" class="chart-controls"><span>表示範囲</span><button data-minutes="5">5分</button><button data-minutes="15" class="active">15分</button><button data-minutes="60">60分</button></div>
+        <div class="chart-controls">
+          <span>比較:</span>
+          <button id="comparePrevious" data-compare="previous" class="active">直前の同期間</button>
+          <button id="compareYearAgo" data-compare="yearAgo">前年同期間</button>
+          <span id="granularityNote" class="muted"></span>
+        </div>
         <div class="chart-wrap interactive-chart">
-          <canvas id="powerChart" height="310" role="img" aria-label="PC電力と電気代の推移グラフ"></canvas>
-          <div id="powerCrosshair" class="chart-crosshair hidden"></div>
-          <div id="powerTooltip" class="chart-tooltip hidden"></div>
-          <p id="powerChartEmpty" class="empty hidden">この期間の記録はまだありません。</p>
+          <canvas id="historyChart" height="320" role="img" aria-label="電力・電力量・料金の推移"></canvas>
+          <div id="historyCrosshair" class="chart-crosshair hidden"></div>
+          <div id="historyTooltip" class="chart-tooltip hidden"></div>
+          <p id="historyChartEmpty" class="empty hidden">この期間の記録はありません。</p>
         </div>
-        <div class="chart-kpis">
-          <article><span>選択期間の合計</span><strong id="chartTotal">--円</strong><small id="chartTotalDetail">-- kWh</small></article>
-          <article><span id="comparisonLabel">直前の同期間比</span><strong id="comparisonValue">--</strong><small id="comparisonDetail">比較データ待ち</small></article>
-          <article><span id="peakBucketLabel">最も高かった時間</span><strong id="peakBucketValue">--円</strong><small id="peakBucketDetail">集計中</small></article>
+        <p id="historyChartNote" class="chart-note"></p>
+        <div class="kpi-grid">
+          <article><span>合計（推定）</span><strong id="kpiCost">--</strong><small id="kpiKwh">--</small></article>
+          <article><span>平均 / 最大 / 最小</span><strong id="kpiWatts">--</strong><small id="kpiWattsDetail">--</small></article>
+          <article><span>使用時間</span><strong id="kpiActive">--</strong><small id="kpiActiveDetail">--</small></article>
+          <article><span>データ点数</span><strong id="kpiSamples">--</strong><small id="kpiSamplesDetail">--</small></article>
+          <article><span>欠損時間</span><strong id="kpiMissing">--</strong><small id="kpiMissingDetail">--</small></article>
+          <article><span>データ品質</span><strong id="kpiQuality">--</strong><small id="kpiQualityDetail">--</small></article>
         </div>
-        <p id="chartNote" class="chart-note">線が途切れている時間は、PC停止・スリープ・計測停止の可能性があります。スリープ中の電気代は加算しません。</p>
       </section>
 
-      <details class="panel details-panel">
-        <summary><span>料金ログの明細</span><small id="historyLogSummary">グラフの区間を表で確認</small></summary>
+      <section class="panel">
+        <div class="panel-heading"><div><p class="eyebrow">COMPARE</p><h2>期間の比較</h2></div><span id="comparisonStatus" class="chip muted">--</span></div>
+        <div id="comparisonBody" class="compare-body">
+          <p class="muted">比較する期間を選ぶと、ここに増減が表示されます。</p>
+        </div>
+        <p class="chart-note">記録が不足している期間とは比較しません。長さが違う期間は「単純比較」と表示します。</p>
+      </section>
+
+      <details class="panel details-panel" open>
+        <summary><span>数値の確認表</span><small id="historyTableSummary">区間ごとの値</small></summary>
         <section class="detail-content">
-          <div class="table-wrap"><table><thead><tr><th>区間</th><th>料金</th><th>電力量</th><th>平均電力</th><th>使用時間</th></tr></thead><tbody id="historyLogRows"></tbody></table></div>
-          <p id="historyLogNote" class="chart-note">細かい値はここで確認できます。全期間はCSV出力で保存できます。</p>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>区間</th><th>平均W</th><th>最大W</th><th>kWh</th><th>推定料金</th><th>使用時間</th><th>データ品質</th><th>前期間との差</th></tr>
+              </thead>
+              <tbody id="historyRows"></tbody>
+            </table>
+          </div>
+          <p id="historyTableNote" class="chart-note"></p>
         </section>
       </details>
 
       <details class="panel details-panel">
-        <summary><span>期間比較・用途の要約</span><small>今回・前回・分類を表示</small></summary>
-        <section class="quick-strip">
-          <article><span>今回のPC使用</span><strong id="quickCurrentCost">--円</strong><small id="quickCurrentDetail">集計中</small></article>
-          <article><span>前回のPC使用</span><strong id="quickPreviousCost">--円</strong><small id="quickPreviousDetail">履歴待ち</small></article>
-          <article><span>選択期間の最大用途</span><strong id="topCategory">--</strong><small id="topCategoryDetail">分類中</small></article>
+        <summary><span>気づき（ピーク・アイドル・記録のない時間）</span><small id="insightSummary">自動抽出</small></summary>
+        <section class="detail-content">
+          <div class="two-column">
+            <article class="detail-card">
+              <h3>電力が急に上がった時間</h3>
+              <div id="eventList" class="list-block"></div>
+            </article>
+            <article class="detail-card">
+              <h3>長く続いたアイドル</h3>
+              <div id="idleList" class="list-block"></div>
+            </article>
+            <article class="detail-card">
+              <h3>記録がなかった時間</h3>
+              <div id="gapList" class="list-block"></div>
+            </article>
+            <article class="detail-card">
+              <h3>24時間の平均パターン</h3>
+              <canvas id="profileChart" height="180" role="img" aria-label="時間帯ごとの平均電力"></canvas>
+              <div id="profileList" class="list-block compact-list"></div>
+            </article>
+          </div>
         </section>
       </details>
 
       <details class="panel details-panel">
-        <summary><span>部品・アプリ別の内訳</span><small>どこが電力を使ったか</small></summary>
-        <section class="two-column detail-content">
-          <article class="detail-card"><div class="panel-heading"><div><p class="eyebrow">部品</p><h2>部品別</h2></div></div><div id="componentList" class="bar-list"></div></article>
-          <article class="detail-card"><div class="panel-heading"><div><p class="eyebrow">アプリ</p><h2>用途・アプリ別</h2></div><span class="muted">推定配分</span></div><div id="categoryList" class="category-list"></div><div class="table-wrap compact"><table><thead><tr><th>アプリ</th><th>割合</th><th>電力量</th><th>料金</th></tr></thead><tbody id="applicationRows"></tbody></table></div></article>
+        <summary><span>日別ヒートマップ</span><small id="heatmapSummary">曜日と時間帯の傾向</small></summary>
+        <section class="detail-content">
+          <div class="heatmap-wrap"><canvas id="heatmapChart" height="260" role="img" aria-label="曜日と時間帯ごとの平均電力"></canvas></div>
+          <p class="chart-note">色が濃いほど平均電力が高い時間帯です。記録がない区間は空白にしています。</p>
         </section>
       </details>
 
       <details class="panel details-panel">
-        <summary><span>起動セッション履歴</span><small>直近30日・最大20件</small></summary>
-        <section class="detail-content"><div class="table-wrap"><table><thead><tr><th>開始</th><th>終了</th><th>使用時間</th><th>平均</th><th>電力量</th><th>料金</th></tr></thead><tbody id="sessionRows"></tbody></table></div></section>
+        <summary><span>部品・アプリ別の内訳（推定）</span><small id="breakdownSummary">どこが使ったか</small></summary>
+        <section class="detail-content two-column">
+          <article class="detail-card">
+            <h3>部品別（推定）</h3>
+            <div id="componentList" class="bar-list"></div>
+            <p id="componentNote" class="chart-note"></p>
+          </article>
+          <article class="detail-card">
+            <h3>用途・分類別（推定配分）</h3>
+            <div id="categoryList" class="bar-list"></div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>アプリ</th><th>割合</th><th>推定kWh</th><th>推定料金</th><th>分類</th></tr></thead>
+                <tbody id="applicationRows"></tbody>
+              </table>
+            </div>
+            <p id="applicationNote" class="chart-note"></p>
+          </article>
+        </section>
       </details>
-      <p class="notice">PC内部センサーを利用した概算です。コンセント実測ではありません。CPU・GPUは取得可能な内部センサー、基板・電源損失・モニターは設定値で補正します。</p>
     </section>
 
+    <!-- ============================ セッション ============================ -->
+    <section id="sessionsView" class="view">
+      <div class="view-intro">
+        <div>
+          <p class="eyebrow">SESSIONS</p>
+          <h2>PCを使った時間ごとの分析</h2>
+          <p class="muted">1秒ごとの記録から、電源が入っていた区間をまとめます。</p>
+        </div>
+        <div class="segmented" id="sessionDays">
+          <button data-days="7">7日</button><button data-days="30" class="active">30日</button><button data-days="90">90日</button>
+        </div>
+      </div>
+      <p id="sessionNote" class="chart-note"></p>
+      <section id="sessionCards" class="session-grid"></section>
+      <details class="panel details-panel" open>
+        <summary><span>セッション一覧</span><small id="sessionTableSummary">--</small></summary>
+        <section class="detail-content">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>開始</th><th>終了</th><th>継続</th><th>平均W</th><th>最大W</th><th>kWh</th><th>推定料金</th><th>主なアプリ</th><th>アイドル</th><th>状態</th></tr>
+              </thead>
+              <tbody id="sessionRows"></tbody>
+            </table>
+          </div>
+          <p class="chart-note">アプリ名は各セッションで最も電力を使用していたアプリ（推定）です。アプリ別の合計はPC全体の推定値と一致しません。</p>
+        </section>
+      </details>
+    </section>
+
+    <!-- ============================ PC状態 ============================ -->
+    <section id="systemView" class="view">
+      <div class="view-intro">
+        <div>
+          <p class="eyebrow">PC STATUS</p>
+          <h2>いまのPCの状態</h2>
+          <p class="muted">この画面を開いている間だけ更新します。取得できない項目は0ではなく「未取得」「未対応」と表示します。</p>
+        </div>
+        <div class="segmented" id="systemRanges">
+          <button data-system-range="15m" class="active">直近15分</button><button data-system-range="today">今日</button>
+        </div>
+      </div>
+      <section class="panel">
+        <div class="panel-heading"><div><p class="eyebrow">SENSORS</p><h2>取得できている情報</h2></div><span id="systemUpdated" class="muted">--</span></div>
+        <div id="systemItems" class="sensor-grid"></div>
+      </section>
+      <section class="panel chart-panel">
+        <div class="panel-heading"><div><p class="eyebrow">UTILIZATION</p><h2>CPU・GPU・メモリ使用率</h2></div><span id="usageAvailability" class="muted">%</span></div>
+        <div class="chart-wrap">
+          <canvas id="systemChart" height="260" role="img" aria-label="CPU・GPU・メモリ使用率の推移"></canvas>
+          <p id="systemChartEmpty" class="empty hidden">使用率の履歴がWattSeal DBにないため、現在値のみ表示しています。</p>
+        </div>
+      </section>
+      <section class="two-column">
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">DRIVES</p><h2>ドライブの空き容量</h2></div><span id="driveHealth" class="chip muted">--</span></div>
+          <div id="driveList" class="bar-list"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">PC情報</p><h2>構成と記録状態</h2></div></div>
+          <dl class="detail-list" id="hardwareList"></dl>
+        </article>
+      </section>
+    </section>
+
+    <!-- ============================ 容量 ============================ -->
     <section id="storageView" class="view">
-      <div class="view-intro"><div><p class="eyebrow">STORAGE MAP</p><h2>容量を「何に使っているか」で見る</h2><p class="muted">スキャンはこのタブを開き、開始ボタンを押した時だけ動きます。</p></div><button id="reloadStorage" class="button secondary">容量画面を再読込</button></div>
+      <div class="view-intro">
+        <div>
+          <p class="eyebrow">STORAGE MAP</p>
+          <h2>容量を「何に使っているか」で見る</h2>
+          <p class="muted">スキャンは、この画面で「スキャン開始」を押した時だけ動きます。</p>
+        </div>
+        <button id="reloadStorage" class="button secondary" type="button">容量画面を再読込</button>
+      </div>
+      <section class="panel storage-status">
+        <div class="insight-grid">
+          <article><span>スキャン状態</span><strong id="storageState">確認中</strong><small id="storageStateDetail">--</small></article>
+          <article><span>最終スキャン</span><strong id="storageLastScan">--</strong><small id="storageLastScanDetail">--</small></article>
+          <article><span>結果の保存サイズ</span><strong id="storageCacheSize">--</strong><small id="storageCacheDetail">--</small></article>
+          <article><span>前回との比較</span><strong id="storageDiff">--</strong><small id="storageDiffDetail">容量画面で確認できます</small></article>
+        </div>
+      </section>
+      <p id="storageLocalOnly" class="warning hidden">容量マップはフォルダ名やパスを扱うため、PC側でのみ表示できます。スマホからはスキャン状態と最終スキャンの概要だけを確認できます。</p>
       <div id="storageLoading" class="loading-card">容量画面を起動しています…</div>
       <iframe id="storageFrame" class="storage-frame hidden" title="PC容量マップ"></iframe>
     </section>
 
-    <section id="systemView" class="view">
-      <div class="view-intro"><div><p class="eyebrow">PC STATUS</p><h2>今の負荷と記録状態</h2><p class="muted">このタブを表示している間だけ約2秒ごとに更新します。</p></div><div class="segmented" id="systemRanges"><button data-system-range="15m" class="active">直近15分</button><button data-system-range="today">今日</button></div></div>
-      <section class="hero-grid system-grid">
-        <article class="metric"><span>CPU使用率</span><strong id="cpuUsage">--<small>%</small></strong><em id="cpuName">--</em></article>
-        <article class="metric"><span>GPU使用率</span><strong id="gpuUsage">--<small>%</small></strong><em id="gpuDetail">--</em></article>
-        <article class="metric"><span>メモリ使用率</span><strong id="ramUsage">--<small>%</small></strong><em id="ramDetail">--</em></article>
-        <article class="metric live"><span>WattSeal記録</span><strong id="collectorState" class="text-value">--</strong><em id="collectorDetail">確認中</em></article>
-      </section>
-      <section class="panel chart-panel"><div class="panel-heading"><div><p class="eyebrow">UTILIZATION</p><h2>CPU・GPU・メモリ使用率</h2></div><span class="muted">%</span></div><div class="chart-wrap"><canvas id="systemChart" height="280"></canvas><p id="systemChartEmpty" class="empty hidden">WattSeal DBに使用率履歴がない場合は現在値のみ表示します。</p></div></section>
-      <section class="two-column">
-        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">PC情報</p><h2>PC情報</h2></div></div><dl class="detail-list"><div><dt>稼働時間</dt><dd id="uptime">--</dd></div><div><dt>GPU温度</dt><dd id="gpuTemperature">--</dd></div><div><dt>GPU消費電力</dt><dd id="gpuPower">--</dd></div><div><dt>最終計測</dt><dd id="lastSample">--</dd></div></dl></article>
-        <article class="panel"><div class="panel-heading"><div><p class="eyebrow">保存領域</p><h2>ドライブ空き容量</h2></div></div><div id="driveStatusList" class="bar-list"></div></article>
-      </section>
-    </section>
+    <p class="notice">
+      この画面の電力・料金は、WattSealがWindowsの内部センサーから記録した値をもとにした<strong>推定値</strong>です。
+      コンセントで測る機器ではないため、電力会社の請求額とは一致しません。
+      記録のない時間は0円として加算せず、グラフでも線をつながずに表示します。
+    </p>
   </main>
 
   <dialog id="settingsDialog">
     <form id="settingsForm" method="dialog">
-      <div class="dialog-heading"><div><p class="eyebrow">SETTINGS & DATA</p><h2>設定・データ管理</h2></div><button type="button" id="closeSettings" class="icon-button" aria-label="閉じる">×</button></div>
-      <div class="settings-tabs"><button type="button" data-settings-view="calculation" class="active">計算設定</button><button type="button" data-settings-view="data">データ管理</button></div>
+      <div class="dialog-heading">
+        <div><p class="eyebrow">SETTINGS &amp; DATA</p><h2>設定・データ管理</h2></div>
+        <button type="button" id="closeSettings" class="icon-button" aria-label="閉じる">×</button>
+      </div>
+      <p id="readOnlyNotice" class="warning hidden">スマホ（同一LAN）から開いているため、表示のみ利用できます。設定変更・削除はPC側で行ってください。</p>
+
+      <div class="settings-tabs" role="tablist">
+        <button type="button" data-settings-view="calculation" class="active">計算</button>
+        <button type="button" data-settings-view="display">表示</button>
+        <button type="button" data-settings-view="category">分類</button>
+        <button type="button" data-settings-view="data">データ</button>
+        <button type="button" data-settings-view="network">LAN</button>
+        <button type="button" data-settings-view="logs">ログ</button>
+      </div>
+
       <section id="calculationSettings" class="settings-view active">
         <label>電力単価 <span><input id="electricityRate" type="number" min="0" max="200" step="0.01" required> 円/kWh</span></label>
         <label>センサー補正倍率 <span><input id="sensorFactor" type="number" min="0.5" max="2" step="0.01" required> 倍</span></label>
+        <label>実測との校正係数 <span><input id="wallCalibration" type="number" min="0.5" max="2" step="0.01"> 倍</span></label>
         <label>マザーボード・ファン等 <span><input id="baseWatts" type="number" min="0" max="300" step="1" required> W</span></label>
         <label>モニター追加 <span><input id="monitorWatts" type="number" min="0" max="500" step="1" required> W</span></label>
         <label>月間料金の目安 <span><input id="monthlyBudget" type="number" min="0" max="100000" step="10" required> 円</span></label>
-        <label class="stacked">ゲーム判定キーワード<textarea id="gameKeywords" rows="3" placeholder="steam, terraria, ゲームのexe名"></textarea></label>
-        <p class="help">月間料金の目安は0円で無効です。分類キーワードは過去データにも即時反映されます。PC本体だけならモニターは0Wのままにします。</p>
-        <div class="dialog-actions"><button id="resetSettings" class="button secondary" type="button">初期値へ戻す</button><button class="button" type="submit">保存して再計算</button></div>
+        <div class="dialog-actions in-section">
+          <button id="resetSettings" class="button secondary" type="button">初期値へ戻す</button>
+          <button class="button" type="submit">保存して再計算</button>
+        </div>
+        <p class="help">
+          校正係数は、壁コンセントの実測値とWattSealの値を比べて補正したいときに使います（1.00のままで補正なし）。
+          月間料金の目安が0円のときは予算表示を行いません。
+        </p>
+        <p class="help">計算は「（WattSeal値 × 補正倍率 × 校正係数）＋ 固定W」で行い、料金は「推定kWh × 電力単価」です。</p>
       </section>
+
+      <section id="displaySettings" class="settings-view">
+        <label>最初に表示する期間
+          <span><select id="defaultRange">
+            <option value="today">今日</option><option value="yesterday">昨日</option><option value="7d">直近7日</option>
+            <option value="month">今月</option><option value="30d">直近30日</option>
+          </select></span>
+        </label>
+        <label>電力量の単位
+          <span><select id="displayUnit"><option value="kwh">kWh</option><option value="wh">Wh</option></select></span>
+        </label>
+        <label>現在値の更新間隔 <span><input id="updateIntervalSeconds" type="number" min="2" max="60" step="1"> 秒</span></label>
+        <label>電力の通知しきい値 <span><input id="thresholdWatts" type="number" min="0" max="2000" step="10"> W</span></label>
+        <div class="dialog-actions in-section">
+          <button class="button" type="submit">保存</button>
+        </div>
+        <p class="help">しきい値は「このW数を超えたら画面上で知らせる」ための目安です。0で通知を止めます。OSの通知やメール送信は行いません。</p>
+      </section>
+
+      <section id="categorySettings" class="settings-view">
+        <label class="stacked">ゲームとして分類するキーワード<textarea id="gameKeywords" rows="3" placeholder="steam, terraria, ゲームのexe名"></textarea></label>
+        <label class="stacked">アプリごとの分類（1行に1つ「exe名 = 分類」）<textarea id="appCategoryMap" rows="6" placeholder="chrome.exe = browser&#10;code.exe = dev&#10;steam.exe = game"></textarea></label>
+        <div class="dialog-actions in-section">
+          <button class="button" type="submit">保存して再計算</button>
+        </div>
+        <p class="help">分類キーワードは過去データにもそのまま反映されます。未分類は「その他・未分類」として残します。</p>
+        <p class="help">分類の種類: ゲーム / ブラウザー / 動画・音楽 / 開発 / 仕事・制作 / ファイル処理 / 通話・連絡 / Windows・常駐 / その他</p>
+      </section>
+
       <section id="dataSettings" class="settings-view">
         <div id="dataSummary" class="data-summary">データ状況を確認しています…</div>
         <p id="dataWarning" class="warning hidden"></p>
-        <div class="network-setting">
-          <label class="toggle-row"><span><strong>同一Wi-Fiのスマホから開く</strong><small>PCと同じネットワーク内だけでアクセスを受け付けます。</small></span><input id="lanAccess" type="checkbox"></label>
-          <div id="accessInfo" class="access-info">接続情報を確認しています…</div>
-          <p class="help">変更後はダッシュボードを再起動します。Windowsファイアウォールが確認を出した場合は、プライベートネットワークだけを許可してください。インターネット公開用ではありません。</p>
+        <div class="button-grid">
+          <a id="backupCsv" class="button secondary" href="/api/export?range=all">CSVを保存（表示期間）</a>
+          <a id="backupJson" class="button secondary" href="/api/export.json?range=all">JSONを保存（表示期間）</a>
+          <a id="backupDb" class="button secondary" href="/api/backup/db">DBバックアップを保存</a>
+          <button id="clearStorageData" class="button secondary" type="button">容量スキャン結果を削除</button>
         </div>
-        <a id="backupCsv" class="button secondary wide" href="/api/export?range=all">全期間CSVを保存</a>
-        <button id="clearStorageData" class="button secondary wide danger-soft" type="button">容量スキャン結果を削除</button>
-        <button id="clearPowerData" class="button wide danger" type="button">電力履歴をすべて初期化</button>
-        <p class="help">削除は自動では行いません。電力履歴の初期化後もWattSealは自動で再開します。</p>
+        <div class="danger-zone">
+          <h3>期間を指定して削除</h3>
+          <div class="inline-inputs">
+            <label>から <input id="deleteFrom" type="date"></label>
+            <label>まで <input id="deleteTo" type="date"></label>
+            <button id="deleteRange" class="button danger" type="button">指定期間の記録を削除</button>
+          </div>
+          <p class="help">選んだ期間の記録だけを削除します。削除前にバックアップを取ってください。</p>
+          <h3>すべて消す</h3>
+          <div class="button-grid">
+            <button id="clearPowerData" class="button danger" type="button">電力履歴をすべて初期化</button>
+            <button id="resetAllSettings" class="button secondary danger-soft" type="button">設定をすべて初期値へ戻す</button>
+          </div>
+          <p class="help">履歴の初期化と設定のリセットは別の操作です。どちらも確認を求めます。</p>
+        </div>
+      </section>
+
+      <section id="networkSettings" class="settings-view">
+        <label class="toggle-row">
+          <span><strong>同一Wi-Fiのスマホから開く</strong><small>PCと同じネットワーク内だけでアクセスを受け付けます。</small></span>
+          <input id="lanAccess" type="checkbox">
+        </label>
+        <label class="toggle-row">
+          <span><strong>LAN閲覧中はサーバーを維持する</strong><small>オフのときは、ブラウザーを閉じて約10分でサーバーが終了します。</small></span>
+          <input id="lanKeepAlive" type="checkbox">
+        </label>
+        <label class="stacked">追加で許可するネットワーク（任意・CIDRを1行に1つ）
+          <textarea id="lanAllowedNetworks" rows="2" placeholder="例: 192.168.10.0/24"></textarea>
+        </label>
+        <div id="accessInfo" class="access-info">接続情報を確認しています…</div>
+        <div class="dialog-actions in-section">
+          <button id="restartDashboard" class="button secondary" type="button">サーバーを再起動</button>
+          <button class="button" type="submit">保存（LAN設定は再起動で反映）</button>
+        </div>
+        <p class="help">
+          接続を許可するのは、このPCのネットワークインターフェースと同じサブネットの端末だけです（例: PCが192.168.1.5/24なら192.168.1.0/24）。
+          仮想アダプター（WSL・Hyper-V等）は既定では許可しません。別のサブネットから見たい場合だけ、上の欄にCIDRを追加してください。
+          LAN側からの操作は読み取り専用です。設定変更・削除・再起動・DBバックアップはPC側の画面からのみ行えます。
+          ルーターのポート開放やインターネット公開は行わないでください。Windowsファイアウォールが確認を出した場合は、プライベートネットワークだけを許可します。
+          容量マップ（フォルダ名やパスを扱う画面）はPC側でのみ表示できます。
+        </p>
+      </section>
+
+      <section id="logsSettings" class="settings-view">
+        <div class="segmented" id="logKinds">
+          <button data-log-kind="normal" class="active">通常ログ</button>
+          <button data-log-kind="detail">詳細ログ</button>
+        </div>
+        <pre id="logOutput" class="log-output">ログを読み込んでいます…</pre>
+        <div class="dialog-actions in-section">
+          <button id="reloadLogs" class="button secondary" type="button">再読込</button>
+        </div>
+        <p class="help">通常ログは「何が起きたか」を人が読むための記録です。詳細ログにはエラー種別・発生箇所・HTTPステータス・センサー取得結果などの技術情報を残します。どちらもユーザー名・PC名・絶対パスは置き換えて保存します。</p>
       </section>
     </form>
   </dialog>
-  <script src="/app.js" defer></script>
+
+  <dialog id="helpDialog">
+    <div class="dialog-heading">
+      <div><p class="eyebrow">HOW TO READ</p><h2>この画面の見かた</h2></div>
+      <button type="button" id="closeHelp" class="icon-button" aria-label="閉じる">×</button>
+    </div>
+    <dl class="help-list">
+      <div><dt>現在の推定電力</dt><dd>WattSealが直近に記録した値です。15秒より古い記録や1時間平均の記録は「現在値」として表示しません。</dd></div>
+      <div><dt>推定料金</dt><dd>「推定kWh × 設定した電力単価」で計算した金額です。電力会社の請求額とは一致しません。</dd></div>
+      <div><dt>記録なし（欠損）</dt><dd>PCが停止・スリープしていた時間や、計測が止まっていた時間です。0Wとは区別して表示し、料金にも加算しません。</dd></div>
+      <div><dt>0Wとして記録</dt><dd>センサーが0Wを報告した記録です。記録なしとは別物として扱います。</dd></div>
+      <div><dt>1時間平均の記録</dt><dd>古い期間は1時間ごとの平均に畳まれています。この区間は使用時間が概算になります。</dd></div>
+      <div><dt>アプリ別の値</dt><dd>PC全体の電力とアプリの使用状況から求めた推定配分です。アプリ単体の実測値ではありません。</dd></div>
+      <div><dt>データ品質</dt><dd>表示期間のうち、実際に記録があった時間の割合です。100%未満のときは欠損を含みます。</dd></div>
+      <div><dt>スマホのショートカット</dt><dd>「ホーム画面に追加」すると、スマホから開きやすくなります。これは補助的なショートカットで、オフラインでは動作しません。暗号化されていない`http://`のLANアドレスでは、インストールできない場合があります。</dd></div>
+    </dl>
+  </dialog>
+
+  <script type="module" src="/js/app.js"></script>
 </body>
 </html>

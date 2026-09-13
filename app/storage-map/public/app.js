@@ -290,7 +290,13 @@ function renderResult(result) {
 
 async function loadLastResult() {
   try {
-    renderResult(await json('/api/result'));
+    const result = await json('/api/result');
+    // 結果がまだ無い場合はサーバーが { empty: true } を返す（正常な初期状態）
+    if (!result || result.empty) {
+      setStatus('調べるドライブまたはフォルダを選んでください');
+      return;
+    }
+    renderResult(result);
   } catch (_) {
     setStatus('調べるドライブまたはフォルダを選んでください');
   }
@@ -330,7 +336,8 @@ async function pollStatus() {
       state.polling = null;
       byId('scanButton').disabled = false;
       byId('progressArea').classList.add('hidden');
-      renderResult(await json('/api/result'));
+      const result = await json('/api/result');
+      if (result && !result.empty) renderResult(result);
     } else if (status.status === 'error') {
       clearInterval(state.polling);
       state.polling = null;

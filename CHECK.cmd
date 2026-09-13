@@ -18,6 +18,7 @@ echo.
 if exist "%INSTALL_DIR%\WattSeal.exe" (echo [OK] WattSeal.exe) else (echo [NG] WattSeal.exe is missing)
 if exist "%INSTALL_DIR%\server.js" (echo [OK] Dashboard files) else (echo [NG] Dashboard files are missing)
 if exist "%INSTALL_DIR%\power_monitoring.db" (echo [OK] Power database) else (echo [WAIT/NG] Power database does not exist yet)
+if exist "%INSTALL_DIR%\logs\app.log" (echo [OK] Logs: %INSTALL_DIR%\logs) else (echo [INFO] Log file has not been created yet)
 echo.
 
 tasklist /FI "IMAGENAME eq WattSeal.exe" 2>nul | find /I "WattSeal.exe" >nul
@@ -31,6 +32,15 @@ if exist "%SOURCE_DIR%setup-log.txt" (
   echo ----------------------------------------
 ) else (
   echo setup-log.txt はまだありません。
+)
+echo.
+
+if exist "%INSTALL_DIR%\logs\app.log" (
+  echo ダッシュボードの通常ログ（末尾15行）:
+  echo ----------------------------------------
+  powershell.exe -NoProfile -Command "Get-Content -LiteralPath '%INSTALL_DIR%\logs\app.log' -Tail 15"
+  echo ----------------------------------------
+  echo 詳細ログ: %INSTALL_DIR%\logs\debug.log
 )
 echo.
 pause

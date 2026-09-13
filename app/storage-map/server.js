@@ -460,14 +460,16 @@ const server = http.createServer(async (req, res) => {
       setTimeout(() => server.close(() => process.exit(0)), 50);
       return;
     }
-    if (req.method === 'GET' && url.pathname === '/api/result') {
-      if (!lastResult) {
-        jsonResponse(res, 404, { error: '保存されたスキャン結果はまだありません。' });
-      } else {
-        jsonResponse(res, 200, lastResult);
+      if (req.method === 'GET' && url.pathname === '/api/result') {
+        // 結果がまだ無いのは異常ではなく初期状態なので、404ではなく200＋状態で返す
+        // （ブラウザーのコンソールに不要なエラーを出さないため）
+        if (!lastResult) {
+          jsonResponse(res, 200, { empty: true, message: '保存されたスキャン結果はまだありません。' });
+        } else {
+          jsonResponse(res, 200, lastResult);
+        }
+        return;
       }
-      return;
-    }
     if (req.method === 'POST' && url.pathname === '/api/pick-folder') {
       if (!sameOriginRequest(req)) throw Object.assign(new Error('許可されていない接続元です。'), { statusCode: 403 });
       const selectedPath = await pickFolder();

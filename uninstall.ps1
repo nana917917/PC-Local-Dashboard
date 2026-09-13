@@ -12,7 +12,13 @@ Remove-Item -LiteralPath $desktopShortcut -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Startup')) 'PC電気代自動記録.lnk') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path ([Environment]::GetFolderPath('Desktop')) 'PC電気代を見る.lnk') -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PCLocalDashboard' -Recurse -Force -ErrorAction SilentlyContinue
-Get-Process -Name 'WattSeal' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+# このインストール先のWattSealだけを停止する（別の場所のWattSealを巻き込まない）
+$wattSealPath = [System.IO.Path]::GetFullPath((Join-Path $installDir 'app\WattSeal.exe'))
+$wattSealProcesses = @(Get-CimInstance Win32_Process -Filter "Name='WattSeal.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.ExecutablePath -eq $wattSealPath })
+foreach ($process in $wattSealProcesses) {
+    Stop-Process -Id $process.ProcessId -Force -ErrorAction SilentlyContinue
+}
 if (Test-Path -LiteralPath $pidPath) {
     $dashboardPid = Get-Content -LiteralPath $pidPath -ErrorAction SilentlyContinue
     if ($dashboardPid -match '^\d+$') {

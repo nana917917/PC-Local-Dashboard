@@ -110,7 +110,7 @@ if ($nodeVersion -lt [version]'22.5.0') {
     throw "Node.js 22.5以降が必要です。現在: $nodeVersionText"
 }
 Write-Host ("[OK] Node.js $nodeVersionText")
-Write-SetupLog 'OK' ("Node.js $nodeVersionTextを確認しました。")
+Write-SetupLog 'OK' ("Node.js " + $nodeVersionText + " を確認しました。")
 
 $configPath = Join-Path $appDir 'config.json'
 $savedConfig = $null
@@ -123,6 +123,19 @@ Stop-StorageProcess
 
 New-Item -ItemType Directory -Path $appDir -Force | Out-Null
 Copy-Item -Path (Join-Path $sourceDir 'app\*') -Destination $appDir -Recurse -Force
+
+# 過去のバージョンで使っていた不要なファイルを片付ける（記録データには触れない）
+$obsoleteFiles = @(
+    (Join-Path $appDir 'public\app.js'),   # v0.12で app\public\js\ へ移動
+    (Join-Path $appDir 'public\sw.js')     # v0.12でService Workerは登録しない
+)
+foreach ($obsolete in $obsoleteFiles) {
+    if (Test-Path -LiteralPath $obsolete) {
+        Remove-Item -LiteralPath $obsolete -Force -ErrorAction SilentlyContinue
+        Write-SetupLog 'INFO' ('古いファイルを整理しました: ' + (Split-Path -Leaf $obsolete))
+    }
+}
+
 Copy-Item -LiteralPath (Join-Path $sourceDir 'uninstall.ps1') -Destination (Join-Path $installDir 'uninstall.ps1') -Force
 Copy-Item -LiteralPath (Join-Path $sourceDir 'アンインストール.cmd') -Destination (Join-Path $installDir 'アンインストール.cmd') -Force
 [System.IO.File]::WriteAllText(
@@ -269,7 +282,7 @@ $dashboardShortcut.Save()
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\PCLocalDashboard'
 New-Item -Path $uninstallKey -Force | Out-Null
 Set-ItemProperty -Path $uninstallKey -Name DisplayName -Value 'PC Local Dashboard'
-Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.11.0'
+Set-ItemProperty -Path $uninstallKey -Name DisplayVersion -Value '0.12.0'
 Set-ItemProperty -Path $uninstallKey -Name Publisher -Value 'PC Local Dashboard contributors'
 Set-ItemProperty -Path $uninstallKey -Name InstallLocation -Value $installDir
 Set-ItemProperty -Path $uninstallKey -Name DisplayIcon -Value "$env:SystemRoot\System32\powercpl.dll"
